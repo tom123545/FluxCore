@@ -1,0 +1,18 @@
+server:
+  port: ${SERVER_PORT:8082}
+spring:
+  application:
+    name: procurement-service
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/fluxcore_procurement?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USERNAME:fluxcore}
+    password: ${DB_PASSWORD:fluxcore}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: update
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
