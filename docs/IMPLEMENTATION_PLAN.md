@@ -10,7 +10,8 @@
 
 - Java 21 + Spring Boot 3.4.x。
 - Maven 多模块工程。
-- MySQL 8：各服务使用独立数据库，体现数据归属边界。
+- 只有一个通用 `approval-service` 审批引擎；采购和合同统一由 `business-service` 提供业务数据，不得各自复制审批服务，新增审批流程只增加流程配置和必要的业务适配器。
+- MySQL 8：使用一个 `fluxcore` 数据库和按职责划分的多张表；服务通过代码/接口边界隔离数据，不直接跨服务 Join。
 - Redis 7：用于提交和审批动作的分布式锁；不把 Redis 锁作为唯一一致性保障。
 - RabbitMQ：异步通知和领域事件；不引入 RocketMQ，避免重复建设消息基础设施。
 - API 优先，Swagger 作为第一版验证入口；前端页面不是第一优先级。
@@ -22,42 +23,41 @@
 | 服务 | 端口 | 目标 |
 |---|---:|---|
 | gateway-service | 8080 | 统一入口和路由 |
-| approval-service | 8081 | 流程定义、审批实例、审批动作、待办、历史、快照 |
-| procurement-service | 8082 | 采购申请业务数据 |
-| contract-service | 8083 | 合同变更业务数据 |
+| approval-service | 8081 | 唯一通用审批引擎：流程定义、审批实例、审批动作、待办、历史、快照 |
+| business-service | 8082 | 采购、合同及未来业务申请数据，不包含审批引擎 |
 | notification-service | 8084 | 消费审批事件并模拟通知 |
 
 ## 4. 分阶段任务
 
 ### Phase 0：工程基础（当前阶段）
 
-- [x] 创建 Maven 父工程和五个服务模块。
+- [x] 创建 Maven 父工程和四个应用服务模块。
 - [x] 创建 MySQL、Redis、RabbitMQ 的 Docker Compose 基础设施。
-- [x] 创建独立数据库初始化脚本。
+- [x] 创建单库初始化脚本（`fluxcore`）。
 - [x] 创建服务启动类和基础配置。
 - [x] 创建本实施记录、架构说明和 README。
-- [ ] 确认 Maven 命令可用并完成首次构建（当前终端未识别 `mvn`，需要刷新 PATH 后继续）。
+- [x] 通过 IDEA Maven Runner 完成根工程首次 `compile`，构建结果为 `BUILD SUCCESS`。
 - [x] 使用本机 Maven 仓库中的依赖，通过 `javac` 编译全部 10 个 Java 源文件。
+- [x] 将业务服务和审批服务的数据访问层切换为 MyBatis-Plus；Mapper 使用 `@Mapper` + `BaseMapper`，Entity 使用 `@TableName` + `@TableId`。
 
 ### Phase 1：审批领域核心
 
-- [ ] 定义审批流程、流程版本、节点、流转规则。
-- [ ] 定义审批实例、审批动作、审批快照、待办、幂等记录、Outbox 事件。
-- [ ] 实现配置化串行审批流程。
-- [ ] 实现提交、通过、驳回、撤回。
+- [x] 定义审批流程、流程版本、节点、流转规则。
+- [x] 定义审批实例、审批动作、审批快照、待办、幂等字段、Outbox 事件。
+- [x] 实现配置化串行审批流程的首节点创建。
+- [x] 实现提交审批；通过、驳回、撤回待后续阶段实现。
 - [ ] 实现审批历史和快照查询。
 
 ### Phase 2：业务接入
 
-- [ ] 实现采购申请服务。
-- [ ] 实现合同变更服务。
-- [ ] 配置采购三级审批流程。
-- [ ] 配置合同两级审批流程。
-- [ ] 通过业务类型适配器读取业务数据，不在审批服务中复制业务表。
+- [x] 在 `business-service` 中实现采购申请和合同变更业务。
+- [x] 配置采购三级审批流程。
+- [x] 配置合同两级审批流程。
+- [ ] 通过 `business-service` 的业务类型适配器读取业务数据，不在审批服务中复制业务流程；新增业务类型不新增审批服务。
 
 ### Phase 3：待办和标准动作
 
-- [ ] 审批节点到达时创建待办。
+- [x] 审批节点到达时创建首个待办。
 - [ ] 审批完成或驳回时清理待办。
 - [ ] 实现待办/已办查询。
 - [ ] 实现转审。
@@ -66,9 +66,9 @@
 
 ### Phase 4：可靠性
 
-- [ ] 使用 Redis 分布式锁保护重复提交。
+- [x] 使用 Redis 分布式锁保护重复提交。
 - [ ] 使用 Redis 分布式锁保护同一审批实例的并发动作。
-- [ ] 使用 MySQL 唯一索引实现最终幂等保障。
+- [x] 使用申请/审批业务表中的幂等字段和 MySQL 唯一索引实现最终幂等保障。
 - [ ] 使用审批实例 version 字段实现乐观锁。
 - [ ] 使用 Outbox + RabbitMQ 实现异步通知。
 - [ ] 通知失败可重试，不阻断审批主流程。
@@ -91,21 +91,21 @@
 6. 使用相同幂等键重复提交，返回原审批实例而不是创建新实例。
 7. 两个请求同时审批同一实例，一个成功，一个返回冲突。
 8. 停止通知服务，审批仍成功，消息可以重试。
-9. 展示新增业务类型只需要增加业务服务和流程配置。
+9. 展示新增业务类型只需要在 `business-service` 增加业务模块和流程配置。
 
 ## 6. 当前进度
 
-当前处于 Phase 0。已生成工程骨架和基础设施配置，Docker Compose 配置校验已通过，尚未实现审批业务代码。当前阻塞点是本终端未识别 Maven 命令；刷新 PATH 后先执行 `mvn -q validate`，再执行 `mvn -DskipTests package`。之后实现 approval-service 的领域模型和数据库迁移。
+当前已完成 Phase 0，并完成申请创建、配置化流程匹配和提交审批首节点链路。提交接口已经使用 Redis 锁、数据库幂等字段、MyBatis-Plus 事务、本地审批实例/节点/待办/快照/动作/Outbox 写入，并调用业务服务将申请改为 `SUBMITTED`。完整多模块 Maven `compile` 已通过。下一步是实现审批通过、驳回、撤回和待办查询。
 
-源码验证证据：2026-09-01 使用 JDK 21、Maven 本地仓库中的 100 个依赖 JAR，通过 `javac -proc:none` 编译五个服务的 10 个 Java 源文件，生成 10 个 class 文件并通过。
+源码验证证据：2026-09-01 使用 JDK 21、Maven 本地仓库中的 100 个依赖 JAR，通过 `javac -proc:none` 编译初始五模块骨架的 10 个 Java 源文件，生成 10 个 class 文件并通过。采购和合同已合并为 `business-service`，合并后的四模块工程已完成 POM、目录和 Compose 静态校验，待 IDEA Maven 再次执行 `compile` 确认。
 
 ### 当前环境记录（2026-09-01）
 
 - JDK 21：可用。
 - Docker 29.7.2：可用。
 - Docker Compose v5.4.0：可用，`docker compose config --quiet` 已通过。
-- Maven：用户已安装，但当前 PowerShell 会话中 `mvn` 不在 PATH；重新打开终端后复查。
-- Docker 镜像拉取：当前失败，Docker Desktop 报告未配置 HTTPS proxy，需在 Docker Desktop 配置网络/代理后重试；这不影响源码骨架和 Compose 配置校验。
+- Maven：IDEA Maven Runner 已成功完成根工程 `compile`；当前 Codex PowerShell 中仍未识别 `mvn`，命令行 PATH 可后续单独修复。
+- Docker：用户已成功拉取并启动 MySQL、Redis、RabbitMQ 镜像和容器。
 
 ## 7. 后续模型执行规则
 

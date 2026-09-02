@@ -1,25 +1,23 @@
 server:
-  port: ${SERVER_PORT:8084}
+  port: ${SERVER_PORT:8082}
 spring:
   application:
-    name: notification-service
+    name: business-service
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/fluxcore?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${DB_USERNAME:fluxcore}
     password: ${DB_PASSWORD:fluxcore}
-  jpa:
-    open-in-view: false
-    hibernate:
-      ddl-auto: update
   sql:
     init:
       mode: always
       schema-locations: classpath:db/schema.sql
-  rabbitmq:
-    host: ${RABBITMQ_HOST:localhost}
-    port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USERNAME:fluxcore}
-    password: ${RABBITMQ_PASSWORD:fluxcore}
+mybatis-plus:
+  mapper-locations: classpath:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
 management:
   endpoints:
     web:
