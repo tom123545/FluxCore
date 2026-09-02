@@ -1,0 +1,25 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${LOCAL_DB_URL:jdbc:mysql://127.0.0.1:3306/fluxcore?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${LOCAL_DB_USERNAME:root}
+    password: ${LOCAL_DB_PASSWORD:}
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+      data-locations: classpath:db/data.sql
+  data:
+    redis:
+      host: ${LOCAL_REDIS_HOST:127.0.0.1}
+      port: ${LOCAL_REDIS_PORT:6379}
+  rabbitmq:
+    host: ${LOCAL_RABBITMQ_HOST:127.0.0.1}
+    port: ${LOCAL_RABBITMQ_PORT:5672}
+    username: ${LOCAL_RABBITMQ_USERNAME:guest}
+    password: ${LOCAL_RABBITMQ_PASSWORD:guest}
+business:
+  service:
+    url: ${LOCAL_BUSINESS_SERVICE_URL:http://127.0.0.1:8082}

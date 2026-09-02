@@ -3,14 +3,8 @@ server:
 spring:
   application:
     name: business-service
-  datasource:
-    url: ${DB_URL:jdbc:mysql://localhost:3306/fluxcore?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
-    username: ${DB_USERNAME:fluxcore}
-    password: ${DB_PASSWORD:fluxcore}
-  sql:
-    init:
-      mode: always
-      schema-locations: classpath:db/schema.sql
+  profiles:
+    default: local
 mybatis-plus:
   mapper-locations: classpath:/mapper/**/*.xml
   configuration:

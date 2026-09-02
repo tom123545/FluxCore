@@ -12,7 +12,7 @@
 - 工程是 Maven 多模块 Spring Boot 项目。
 - 已有四个应用服务目录和启动类：`gateway-service`、`approval-service`、`business-service`、`notification-service`；当前业务类尚未实现。
 - 架构原则已确认：只有一个通用 `approval-service` 审批引擎；采购和合同统一放在 `business-service` 中作为不同业务模块，不得各自复制审批引擎。新增审批流程只增加数据库配置/节点规则，必要时增加业务适配器，不新增服务。
-- 基础设施是 MySQL 8、Redis 7、RabbitMQ 4，由根目录 `docker-compose.yml` 管理。
+- 默认运行配置使用本机 MySQL 8、Redis 7、RabbitMQ 4，并通过各模块的 `application-local.yml` 连接 `127.0.0.1`；Docker Compose 仅作为可选基础设施方案，容器化时显式启用 `docker` profile。
 - 用户明确要求使用 Redis 分布式锁防止重复请求执行。
 - 幂等方案已确认：不创建独立幂等记录表，直接在 `application`、`approval_instance`、`approval_action` 中保存幂等字段，并使用唯一索引。
 - 不要引入 RocketMQ，继续使用 RabbitMQ。
@@ -26,6 +26,7 @@
 - 提交时创建审批实例、首节点、首个待办、提交快照、动作历史和 Outbox 事件。
 - Redis 提交锁和申请/提交请求幂等校验。
 - 完整多模块 Maven `compile` 已通过。
+- `ApprovalSubmitServiceTest` 已覆盖正常提交、重复提交和 Redis 锁冲突，`approval-service` Maven `test` 已通过。
 
 接手后的第一步：
 

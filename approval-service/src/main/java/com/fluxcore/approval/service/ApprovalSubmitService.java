@@ -102,7 +102,6 @@ public class ApprovalSubmitService {
                 throw new ApprovalSubmitException("APPROVER_NOT_CONFIGURED", "首个审批节点未配置审批人", HttpStatus.UNPROCESSABLE_ENTITY);
             }
 
-            LocalDateTime now = LocalDateTime.now();
             ApprovalInstanceEntity instance = new ApprovalInstanceEntity();
             instance.setApprovalNo("APR-" + shortUuid());
             instance.setApplicationId(businessData.applicationId());
@@ -114,8 +113,6 @@ public class ApprovalSubmitService {
             instance.setStatus(IN_PROGRESS);
             instance.setCurrentNodeId(firstNode.getId());
             instance.setLockVersion(0L);
-            instance.setCreatedAt(now);
-            instance.setUpdatedAt(now);
             try {
                 instanceMapper.insert(instance);
             } catch (DuplicateKeyException duplicateKeyException) {
@@ -127,9 +124,7 @@ public class ApprovalSubmitService {
             nodeInstance.setApprovalInstanceId(instance.getId());
             nodeInstance.setNodeId(firstNode.getId());
             nodeInstance.setStatus("ACTIVE");
-            nodeInstance.setStartedAt(now);
-            nodeInstance.setCreatedAt(now);
-            nodeInstance.setUpdatedAt(now);
+            nodeInstance.setStartedAt(LocalDateTime.now());
             nodeInstanceMapper.insert(nodeInstance);
 
             ApprovalTaskEntity task = new ApprovalTaskEntity();
@@ -137,8 +132,6 @@ public class ApprovalSubmitService {
             task.setNodeInstanceId(nodeInstance.getId());
             task.setAssigneeId(firstNode.getApproverValue());
             task.setStatus("PENDING");
-            task.setCreatedAt(now);
-            task.setUpdatedAt(now);
             taskMapper.insert(task);
 
             String snapshotJson = writeJson(businessData);
@@ -152,7 +145,6 @@ public class ApprovalSubmitService {
             snapshot.setDataJson(snapshotJson);
             snapshot.setDataHash(sha256(snapshotJson));
             snapshot.setCreatedBy(request.applicantId());
-            snapshot.setCreatedAt(now);
             snapshotMapper.insert(snapshot);
 
             ApprovalActionEntity action = new ApprovalActionEntity();
@@ -166,7 +158,6 @@ public class ApprovalSubmitService {
             action.setToStatus(IN_PROGRESS);
             action.setComment("提交审批");
             action.setSnapshotId(snapshot.getId());
-            action.setCreatedAt(now);
             actionMapper.insert(action);
 
             ApprovalOutboxEventEntity outbox = new ApprovalOutboxEventEntity();
@@ -177,7 +168,6 @@ public class ApprovalSubmitService {
             outbox.setPayloadJson(writeJson(new SubmitEvent(instance.getId(), instance.getApprovalNo(), request.businessType(), request.businessId(), task.getId(), firstNode.getApproverValue())));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
-            outbox.setCreatedAt(now);
             outboxMapper.insert(outbox);
 
             // 两个服务之间不存在本地分布式事务；审批本地事务成功前更新不会发生，失败会回滚本地审批数据。

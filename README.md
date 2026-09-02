@@ -6,13 +6,37 @@
 
 - JDK 21
 - Maven 3.9+
-- Docker Desktop
-- Docker Compose
+- 本机 MySQL 8+
+- 本机 Redis 7+
+- 本机 RabbitMQ 4+
+- Docker Desktop（可选，仅用于启动容器化基础设施）
 
-## 启动基础设施
+## 本地配置
+
+服务默认使用 `local` profile，连接本机的 `127.0.0.1`：
+
+- MySQL：`127.0.0.1:3306/fluxcore`，默认用户 `root`
+- Redis：`127.0.0.1:6379`，默认无密码
+- RabbitMQ：`127.0.0.1:5672`，默认用户密码 `guest/guest`
+
+如果本机 MySQL root 用户设置了密码，启动服务前设置：
+
+```powershell
+$env:LOCAL_DB_PASSWORD = '<本机 MySQL root 密码>'
+```
+
+也可以使用 `LOCAL_DB_USERNAME`、`LOCAL_DB_URL`、`LOCAL_REDIS_*` 和 `LOCAL_RABBITMQ_*` 覆盖本地默认值。
+
+## Docker 基础设施（可选）
 
 ```powershell
 docker compose up -d
+```
+
+容器化部署时显式启用 Docker profile：
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE = 'docker'
 ```
 
 也可以执行：
@@ -21,7 +45,7 @@ docker compose up -d
 .\scripts\start-infra.ps1
 ```
 
-基础设施包括 MySQL、Redis 和 RabbitMQ。RabbitMQ 管理台地址为 <http://localhost:15672>，账号密码均为 `fluxcore`。
+Docker profile 使用 Compose 服务名 `mysql`、`redis`、`rabbitmq`，账号密码为 Compose 中定义的 `fluxcore`。
 
 ## 当前状态
 
@@ -47,4 +71,5 @@ docker compose up -d
 - [实施计划](docs/IMPLEMENTATION_PLAN.md)
 - [架构设计](docs/ARCHITECTURE.md)
 - [技术方案](docs/TECHNICAL_DESIGN.md)
+- [技术方案与开发现状](docs/TECHNICAL_SOLUTION.md)
 - [数据库设计技术方案](docs/DATABASE_DESIGN.md)

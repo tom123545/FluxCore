@@ -22,7 +22,6 @@ import com.fluxcore.business.mapper.ContractChangeRequestMapper;
 import com.fluxcore.business.mapper.ProcurementItemMapper;
 import com.fluxcore.business.mapper.ProcurementRequestMapper;
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
@@ -68,12 +67,12 @@ public class BusinessApplicationService {
         ProcurementRequestEntity procurement = new ProcurementRequestEntity();
         procurement.setApplicationId(applicationId); procurement.setRequestNo(businessId); procurement.setApplicantId(request.getApplicantId());
         procurement.setDepartmentCode(request.getDepartmentCode()); procurement.setTotalAmount(request.getTotalAmount());
-        procurement.setCurrency(request.getCurrency()); procurement.setStatus(DRAFT); setCreateTime(procurement);
+        procurement.setCurrency(request.getCurrency()); procurement.setStatus(DRAFT);
         procurementRequestMapper.insert(procurement);
         for (PurchaseItemRequest item : request.getItems()) {
             ProcurementItemEntity entity = new ProcurementItemEntity(); entity.setProcurementId(procurement.getId());
             entity.setItemName(item.getItemName()); entity.setQuantity(item.getQuantity()); entity.setUnitPrice(item.getUnitPrice());
-            entity.setAmount(item.getQuantity().multiply(item.getUnitPrice())); setCreateTime(entity); procurementItemMapper.insert(entity);
+            entity.setAmount(item.getQuantity().multiply(item.getUnitPrice())); procurementItemMapper.insert(entity);
         }
         insertExtension(applicationId, request); application.setId(applicationId); return toResponse(application);
     }
@@ -88,11 +87,11 @@ public class BusinessApplicationService {
         ContractChangeRequestEntity contract = new ContractChangeRequestEntity(); contract.setApplicationId(applicationId);
         contract.setChangeNo(businessId); contract.setContractNo(request.getContractNo()); contract.setApplicantId(request.getApplicantId());
         contract.setChangeReason(request.getChangeReason()); contract.setChangeAmount(request.getChangeAmount()); contract.setCurrency(request.getCurrency());
-        contract.setStatus(DRAFT); setCreateTime(contract); contractChangeRequestMapper.insert(contract);
+        contract.setStatus(DRAFT); contractChangeRequestMapper.insert(contract);
         if (request.getItems() != null) for (ContractChangeItemRequest item : request.getItems()) {
             ContractChangeItemEntity entity = new ContractChangeItemEntity(); entity.setContractChangeId(contract.getId());
             entity.setFieldName(item.getFieldName()); entity.setOldValue(item.getOldValue()); entity.setNewValue(item.getNewValue());
-            setCreateTime(entity); contractChangeItemMapper.insert(entity);
+            contractChangeItemMapper.insert(entity);
         }
         insertExtension(applicationId, request); application.setId(applicationId); return toResponse(application);
     }
@@ -135,19 +134,13 @@ public class BusinessApplicationService {
     }
     private ApplicationEntity newApplication(String type, String businessId, String title, String applicantId, String idempotencyKey) {
         ApplicationEntity entity = new ApplicationEntity(); entity.setApplicationNo("APP-" + shortUuid()); entity.setBusinessType(type); entity.setBusinessId(businessId);
-        entity.setTitle(title); entity.setApplicantId(applicantId); entity.setIdempotencyKey(idempotencyKey); entity.setStatus(DRAFT); entity.setVersion(0L); setCreateTime(entity); return entity;
+        entity.setTitle(title); entity.setApplicantId(applicantId); entity.setIdempotencyKey(idempotencyKey); entity.setStatus(DRAFT); entity.setVersion(0L); return entity;
     }
     private String nextBusinessId(String prefix) { return prefix + "-" + shortUuid(); }
     private String shortUuid() { return UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(); }
     private void insertExtension(long applicationId, Object request) {
-        try { ApplicationExtEntity entity = new ApplicationExtEntity(); entity.setApplicationId(applicationId); entity.setFormData(objectMapper.writeValueAsString(request)); setCreateTime(entity); applicationExtMapper.insert(entity); }
+        try { ApplicationExtEntity entity = new ApplicationExtEntity(); entity.setApplicationId(applicationId); entity.setFormData(objectMapper.writeValueAsString(request)); applicationExtMapper.insert(entity); }
         catch (JsonProcessingException exception) { throw new IllegalStateException("申请扩展数据序列化失败", exception); }
     }
-    private void setCreateTime(ApplicationEntity e) { e.setCreatedAt(LocalDateTime.now()); e.setUpdatedAt(e.getCreatedAt()); }
-    private void setCreateTime(ProcurementRequestEntity e) { e.setCreatedAt(LocalDateTime.now()); e.setUpdatedAt(e.getCreatedAt()); }
-    private void setCreateTime(ProcurementItemEntity e) { e.setCreatedAt(LocalDateTime.now()); e.setUpdatedAt(e.getCreatedAt()); }
-    private void setCreateTime(ContractChangeRequestEntity e) { e.setCreatedAt(LocalDateTime.now()); e.setUpdatedAt(e.getCreatedAt()); }
-    private void setCreateTime(ContractChangeItemEntity e) { e.setCreatedAt(LocalDateTime.now()); e.setUpdatedAt(e.getCreatedAt()); }
-    private void setCreateTime(ApplicationExtEntity e) { e.setCreatedAt(LocalDateTime.now()); e.setUpdatedAt(e.getCreatedAt()); }
     private ApplicationResponse toResponse(ApplicationEntity e) { return new ApplicationResponse(e.getId(), e.getApplicationNo(), e.getBusinessType(), e.getBusinessId(), e.getTitle(), e.getApplicantId(), e.getStatus()); }
 }

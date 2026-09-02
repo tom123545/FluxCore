@@ -3,6 +3,8 @@ server:
 spring:
   application:
     name: gateway-service
+  profiles:
+    default: local
 management:
   endpoints:
     web:
