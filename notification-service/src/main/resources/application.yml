@@ -5,8 +5,22 @@ spring:
     name: notification-service
   profiles:
     default: local
+  rabbitmq:
+    listener:
+      simple:
+        default-requeue-rejected: true
+        acknowledge-mode: auto
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+fluxcore:
+  messaging:
+    approval:
+      exchange: ${APPROVAL_EVENT_EXCHANGE:fluxcore.approval.events}
+      queue: ${APPROVAL_EVENT_QUEUE:fluxcore.approval.notifications}
+      routing-key: ${APPROVAL_EVENT_ROUTING_KEY:approval.event}

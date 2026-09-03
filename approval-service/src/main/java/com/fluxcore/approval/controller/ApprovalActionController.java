@@ -2,6 +2,8 @@ package com.fluxcore.approval.controller;
 
 import com.fluxcore.approval.dto.ApprovalActionRequest;
 import com.fluxcore.approval.dto.ApprovalActionResponse;
+import com.fluxcore.approval.dto.ApprovalAddSignRequest;
+import com.fluxcore.approval.dto.ApprovalTransferRequest;
 import com.fluxcore.approval.service.ApprovalActionService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -37,5 +39,19 @@ public class ApprovalActionController {
                                           @PathVariable long taskId,
                                           @Valid @RequestBody ApprovalActionRequest request) {
         return approvalActionService.approve(approvalInstanceId, taskId, request);
+    }
+
+    @PostMapping("/{approvalInstanceId}/tasks/{taskId}/transfer")
+    public ApprovalActionResponse transfer(@PathVariable long approvalInstanceId,
+                                           @PathVariable long taskId,
+                                           @Valid @RequestBody ApprovalTransferRequest request) {
+        return approvalActionService.transfer(approvalInstanceId, taskId, request);
+    }
+
+    @PostMapping("/{approvalInstanceId}/tasks/{taskId}/add-sign")
+    public ApprovalActionResponse addSign(@PathVariable long approvalInstanceId,
+                                          @PathVariable long taskId,
+                                          @Valid @RequestBody ApprovalAddSignRequest request) {
+        return approvalActionService.addSign(approvalInstanceId, taskId, request);
     }
 }

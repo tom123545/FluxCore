@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fluxcore.approval.dto.ApprovalActionRequest;
 import com.fluxcore.approval.dto.ApprovalActionResponse;
+import com.fluxcore.approval.dto.ApprovalAddSignRequest;
+import com.fluxcore.approval.dto.ApprovalTransferRequest;
 import com.fluxcore.approval.dto.BusinessDataResponse;
 import com.fluxcore.approval.entity.ApprovalActionEntity;
 import com.fluxcore.approval.entity.ApprovalInstanceEntity;
@@ -138,7 +140,6 @@ public class ApprovalActionService {
             String approvalMode = approvalMode(currentNode);
             resolveApprovers(currentNode);
             ensureTaskTransition(task.getStatus(), "APPROVED");
-            ensureNodeTransition(activeNode.getStatus(), "COMPLETED");
 
             ApprovalTransitionEntity transition = transitionMapper.findDefaultNext(
                     instance.getProcessId(), instance.getCurrentNodeId()).orElse(null);
@@ -159,9 +160,13 @@ public class ApprovalActionService {
             if ("OR".equals(approvalMode)) {
                 taskMapper.cancelOtherPendingByNodeInstanceId(activeNode.getId(), taskId);
             }
-            boolean nodeCompleted = true;
-            if (nodeCompleted && nodeInstanceMapper.markCompleted(activeNode.getId(), approvalInstanceId) != 1) {
-                throw new ApprovalActionException("ACTIVE_NODE_CHANGED", "审批节点状态已发生变化，请重试", HttpStatus.CONFLICT);
+            boolean nodeCompleted = "OR".equals(approvalMode)
+                    || taskMapper.countPendingByNodeInstanceId(activeNode.getId()) == 0;
+            if (nodeCompleted) {
+                ensureNodeTransition(activeNode.getStatus(), "COMPLETED");
+                if (nodeInstanceMapper.markCompleted(activeNode.getId(), approvalInstanceId) != 1) {
+                    throw new ApprovalActionException("ACTIVE_NODE_CHANGED", "审批节点状态已发生变化，请重试", HttpStatus.CONFLICT);
+                }
             }
 
             String snapshotJson = writeJson(businessData);
@@ -242,6 +247,195 @@ public class ApprovalActionService {
 
             return new ApprovalActionResponse(approvalInstanceId, instance.getApprovalNo(), instance.getApplicationId(),
                     instance.getStatus(), instance.getCurrentNodeId(), "APPROVE", action.getId(), false);
+        } finally {
+            redisLockService.unlock(lockKey, lockToken);
+        }
+    }
+
+    @Transactional
+    public ApprovalActionResponse transfer(long approvalInstanceId, long taskId,
+                                           ApprovalTransferRequest request) {
+        String lockKey = "approval:action:" + approvalInstanceId;
+        String lockToken = redisLockService.tryLock(lockKey, LOCK_LEASE);
+        if (lockToken == null) {
+            throw new ApprovalActionException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
+        }
+        try {
+            ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId,
+                    request.actionRequestId());
+            if (existingAction != null) {
+                if (!"TRANSFER".equals(existingAction.getActionType())
+                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                    throw new ApprovalActionException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
+                }
+                return toResponse(approvalInstanceId, existingAction, true);
+            }
+
+            ApprovalInstanceEntity instance = instanceMapper.selectById(approvalInstanceId);
+            if (instance == null) {
+                throw new ApprovalActionException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
+            }
+            if (!stateMachine.isInstanceActionable(instance.getStatus())) {
+                throw new ApprovalActionException("APPROVAL_NOT_IN_PROGRESS", "只有进行中的审批可以转审", HttpStatus.CONFLICT);
+            }
+
+            ApprovalTaskEntity task = taskMapper.selectById(taskId);
+            ensureTaskBelongsToInstance(task, approvalInstanceId, taskId);
+            ensureTaskOperator(task, request.operatorId(), "只有待办审批人可以转审");
+            if (!stateMachine.isTaskActionable(task.getStatus())) {
+                throw new ApprovalActionException("TASK_NOT_PENDING", "该待办已经处理，不能重复转审", HttpStatus.CONFLICT);
+            }
+            ApprovalNodeInstanceEntity activeNode = requireActiveNode(instance, task);
+            ApprovalNodeEntity currentNode = nodeMapper.selectById(activeNode.getNodeId());
+            if (currentNode == null) {
+                throw new ApprovalActionException("CURRENT_NODE_NOT_FOUND", "审批配置节点不存在", HttpStatus.UNPROCESSABLE_ENTITY);
+            }
+            approvalMode(currentNode);
+            resolveApprovers(currentNode);
+
+            String targetAssigneeId = normalizeTarget(request.targetAssigneeId(), request.operatorId(),
+                    "转审目标审批人不能为空", "转审目标审批人不能与当前审批人相同");
+            if (taskMapper.countPendingByNodeAndAssignee(activeNode.getId(), targetAssigneeId) > 0) {
+                throw new ApprovalActionException("TARGET_TASK_ALREADY_EXISTS", "目标审批人已有该节点待办", HttpStatus.CONFLICT);
+            }
+            BusinessDataResponse businessData = requireBusinessData(instance);
+
+            ensureTaskTransition(task.getStatus(), "TRANSFERRED");
+            if (taskMapper.transferPendingTask(taskId, approvalInstanceId, request.operatorId(), request.comment()) != 1) {
+                throw new ApprovalActionException("TASK_STATE_CHANGED", "待办状态已发生变化，请重试", HttpStatus.CONFLICT);
+            }
+
+            ApprovalTaskEntity replacementTask = new ApprovalTaskEntity();
+            replacementTask.setApprovalInstanceId(approvalInstanceId);
+            replacementTask.setNodeInstanceId(activeNode.getId());
+            replacementTask.setSourceTaskId(taskId);
+            replacementTask.setAssigneeId(targetAssigneeId);
+            replacementTask.setStatus("PENDING");
+            taskMapper.insert(replacementTask);
+
+            ApprovalSnapshotEntity snapshot = createSnapshot(approvalInstanceId, activeNode.getId(), "TRANSFER",
+                    instance, businessData, request.operatorId());
+            snapshotMapper.insert(snapshot);
+
+            ApprovalActionEntity action = new ApprovalActionEntity();
+            action.setApprovalInstanceId(approvalInstanceId);
+            action.setNodeInstanceId(activeNode.getId());
+            action.setTaskId(taskId);
+            action.setOperatorId(request.operatorId());
+            action.setActionType("TRANSFER");
+            action.setActionRequestId(request.actionRequestId());
+            action.setFromStatus(IN_PROGRESS);
+            action.setToStatus(IN_PROGRESS);
+            action.setComment(request.comment());
+            action.setSnapshotId(snapshot.getId());
+            actionMapper.insert(action);
+
+            ApprovalOutboxEventEntity outbox = new ApprovalOutboxEventEntity();
+            outbox.setEventId(UUID.randomUUID().toString());
+            outbox.setAggregateType("APPROVAL_INSTANCE");
+            outbox.setAggregateId(String.valueOf(approvalInstanceId));
+            outbox.setEventType("APPROVAL_TASK_TRANSFERRED");
+            outbox.setPayloadJson(writeJson(new TransferEvent(approvalInstanceId, instance.getApprovalNo(),
+                    instance.getBusinessType(), instance.getBusinessId(), taskId, replacementTask.getId(),
+                    request.operatorId(), targetAssigneeId, targetAssigneeId)));
+            outbox.setStatus("NEW");
+            outbox.setRetryCount(0);
+            outboxMapper.insert(outbox);
+
+            return new ApprovalActionResponse(approvalInstanceId, instance.getApprovalNo(), instance.getApplicationId(),
+                    instance.getStatus(), instance.getCurrentNodeId(), "TRANSFER", action.getId(), false);
+        } finally {
+            redisLockService.unlock(lockKey, lockToken);
+        }
+    }
+
+    @Transactional
+    public ApprovalActionResponse addSign(long approvalInstanceId, long taskId,
+                                          ApprovalAddSignRequest request) {
+        String lockKey = "approval:action:" + approvalInstanceId;
+        String lockToken = redisLockService.tryLock(lockKey, LOCK_LEASE);
+        if (lockToken == null) {
+            throw new ApprovalActionException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
+        }
+        try {
+            ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId,
+                    request.actionRequestId());
+            if (existingAction != null) {
+                if (!"ADD_SIGN".equals(existingAction.getActionType())
+                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                    throw new ApprovalActionException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
+                }
+                return toResponse(approvalInstanceId, existingAction, true);
+            }
+
+            ApprovalInstanceEntity instance = instanceMapper.selectById(approvalInstanceId);
+            if (instance == null) {
+                throw new ApprovalActionException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
+            }
+            if (!stateMachine.isInstanceActionable(instance.getStatus())) {
+                throw new ApprovalActionException("APPROVAL_NOT_IN_PROGRESS", "只有进行中的审批可以加签", HttpStatus.CONFLICT);
+            }
+
+            ApprovalTaskEntity task = taskMapper.selectById(taskId);
+            ensureTaskBelongsToInstance(task, approvalInstanceId, taskId);
+            ensureTaskOperator(task, request.operatorId(), "只有待办审批人可以加签");
+            if (!stateMachine.isTaskActionable(task.getStatus())) {
+                throw new ApprovalActionException("TASK_NOT_PENDING", "该待办已经处理，不能加签", HttpStatus.CONFLICT);
+            }
+            ApprovalNodeInstanceEntity activeNode = requireActiveNode(instance, task);
+            ApprovalNodeEntity currentNode = nodeMapper.selectById(activeNode.getNodeId());
+            if (currentNode == null) {
+                throw new ApprovalActionException("CURRENT_NODE_NOT_FOUND", "审批配置节点不存在", HttpStatus.UNPROCESSABLE_ENTITY);
+            }
+            approvalMode(currentNode);
+            resolveApprovers(currentNode);
+
+            String additionalAssigneeId = normalizeTarget(request.additionalAssigneeId(), request.operatorId(),
+                    "加签审批人不能为空", "加签审批人不能与当前审批人相同");
+            if (taskMapper.countPendingByNodeAndAssignee(activeNode.getId(), additionalAssigneeId) > 0) {
+                throw new ApprovalActionException("TARGET_TASK_ALREADY_EXISTS", "加签审批人已有该节点待办", HttpStatus.CONFLICT);
+            }
+            BusinessDataResponse businessData = requireBusinessData(instance);
+
+            ApprovalTaskEntity addedTask = new ApprovalTaskEntity();
+            addedTask.setApprovalInstanceId(approvalInstanceId);
+            addedTask.setNodeInstanceId(activeNode.getId());
+            addedTask.setSourceTaskId(taskId);
+            addedTask.setAssigneeId(additionalAssigneeId);
+            addedTask.setStatus("PENDING");
+            taskMapper.insert(addedTask);
+
+            ApprovalSnapshotEntity snapshot = createSnapshot(approvalInstanceId, activeNode.getId(), "ADD_SIGN",
+                    instance, businessData, request.operatorId());
+            snapshotMapper.insert(snapshot);
+
+            ApprovalActionEntity action = new ApprovalActionEntity();
+            action.setApprovalInstanceId(approvalInstanceId);
+            action.setNodeInstanceId(activeNode.getId());
+            action.setTaskId(taskId);
+            action.setOperatorId(request.operatorId());
+            action.setActionType("ADD_SIGN");
+            action.setActionRequestId(request.actionRequestId());
+            action.setFromStatus(IN_PROGRESS);
+            action.setToStatus(IN_PROGRESS);
+            action.setComment(request.comment());
+            action.setSnapshotId(snapshot.getId());
+            actionMapper.insert(action);
+
+            ApprovalOutboxEventEntity outbox = new ApprovalOutboxEventEntity();
+            outbox.setEventId(UUID.randomUUID().toString());
+            outbox.setAggregateType("APPROVAL_INSTANCE");
+            outbox.setAggregateId(String.valueOf(approvalInstanceId));
+            outbox.setEventType("APPROVAL_TASK_ADD_SIGNED");
+            outbox.setPayloadJson(writeJson(new AddSignEvent(approvalInstanceId, instance.getApprovalNo(),
+                    instance.getBusinessType(), instance.getBusinessId(), taskId, addedTask.getId(),
+                    request.operatorId(), additionalAssigneeId, additionalAssigneeId)));
+            outbox.setStatus("NEW");
+            outbox.setRetryCount(0);
+            outboxMapper.insert(outbox);
+
+            return new ApprovalActionResponse(approvalInstanceId, instance.getApprovalNo(), instance.getApplicationId(),
+                    instance.getStatus(), instance.getCurrentNodeId(), "ADD_SIGN", action.getId(), false);
         } finally {
             redisLockService.unlock(lockKey, lockToken);
         }
@@ -444,6 +638,65 @@ public class ApprovalActionService {
         }
     }
 
+    private void ensureTaskBelongsToInstance(ApprovalTaskEntity task, long approvalInstanceId, long taskId) {
+        if (task == null || !Long.valueOf(approvalInstanceId).equals(task.getApprovalInstanceId())) {
+            throw new ApprovalActionException("TASK_NOT_FOUND", "审批待办不存在: " + taskId, HttpStatus.NOT_FOUND);
+        }
+    }
+
+    private void ensureTaskOperator(ApprovalTaskEntity task, String operatorId, String message) {
+        if (!operatorId.equals(task.getAssigneeId())) {
+            throw new ApprovalActionException("TASK_OPERATOR_FORBIDDEN", message, HttpStatus.FORBIDDEN);
+        }
+    }
+
+    private ApprovalNodeInstanceEntity requireActiveNode(ApprovalInstanceEntity instance, ApprovalTaskEntity task) {
+        ApprovalNodeInstanceEntity activeNode = nodeInstanceMapper.selectActiveByInstanceId(instance.getId());
+        if (activeNode == null || !stateMachine.isNodeActive(activeNode.getStatus())
+                || instance.getCurrentNodeId() == null
+                || !Long.valueOf(task.getNodeInstanceId()).equals(activeNode.getId())
+                || !instance.getCurrentNodeId().equals(activeNode.getNodeId())) {
+            throw new ApprovalActionException("ACTIVE_NODE_CHANGED", "审批节点状态已发生变化，请重试", HttpStatus.CONFLICT);
+        }
+        return activeNode;
+    }
+
+    private String normalizeTarget(String target, String operatorId, String requiredMessage, String sameMessage) {
+        String normalized = target == null ? "" : target.trim();
+        if (normalized.isBlank()) {
+            throw new ApprovalActionException("TARGET_ASSIGNEE_REQUIRED", requiredMessage, HttpStatus.BAD_REQUEST);
+        }
+        if (normalized.equals(operatorId)) {
+            throw new ApprovalActionException("TARGET_ASSIGNEE_INVALID", sameMessage, HttpStatus.BAD_REQUEST);
+        }
+        return normalized;
+    }
+
+    private BusinessDataResponse requireBusinessData(ApprovalInstanceEntity instance) {
+        BusinessDataResponse businessData = businessDataClient.get(instance.getBusinessType(), instance.getBusinessId());
+        if (businessData == null || !instance.getApplicationId().equals(businessData.applicationId())) {
+            throw new ApprovalActionException("BUSINESS_DATA_NOT_FOUND", "审批对应的业务数据不存在或已变更", HttpStatus.NOT_FOUND);
+        }
+        return businessData;
+    }
+
+    private ApprovalSnapshotEntity createSnapshot(long approvalInstanceId, long nodeInstanceId, String snapshotType,
+                                                  ApprovalInstanceEntity instance, BusinessDataResponse businessData,
+                                                  String operatorId) {
+        String snapshotJson = writeJson(businessData);
+        ApprovalSnapshotEntity snapshot = new ApprovalSnapshotEntity();
+        snapshot.setApprovalInstanceId(approvalInstanceId);
+        snapshot.setNodeInstanceId(nodeInstanceId);
+        snapshot.setSnapshotNo(snapshotMapper.selectMaxSnapshotNo(approvalInstanceId) + 1);
+        snapshot.setSnapshotType(snapshotType);
+        snapshot.setBusinessType(instance.getBusinessType());
+        snapshot.setBusinessId(instance.getBusinessId());
+        snapshot.setDataJson(snapshotJson);
+        snapshot.setDataHash(sha256(snapshotJson));
+        snapshot.setCreatedBy(operatorId);
+        return snapshot;
+    }
+
     private long currentLockVersion(ApprovalInstanceEntity instance) {
         return instance.getLockVersion() == null ? 0L : instance.getLockVersion();
     }
@@ -528,5 +781,15 @@ public class ApprovalActionService {
 
     private record RejectEvent(Long approvalInstanceId, String approvalNo, String businessType,
                                String businessId, Long taskId, String operatorId, String comment) {
+    }
+
+    private record TransferEvent(Long approvalInstanceId, String approvalNo, String businessType,
+                                 String businessId, Long sourceTaskId, Long replacementTaskId,
+                                 String operatorId, String targetAssigneeId, String receiverId) {
+    }
+
+    private record AddSignEvent(Long approvalInstanceId, String approvalNo, String businessType,
+                                String businessId, Long sourceTaskId, Long addedTaskId,
+                                String operatorId, String additionalAssigneeId, String receiverId) {
     }
 }

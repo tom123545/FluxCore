@@ -5,7 +5,7 @@ spring:
   datasource:
     url: ${LOCAL_DB_URL:jdbc:mysql://127.0.0.1:3306/fluxcore?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${LOCAL_DB_USERNAME:root}
-    password: ${LOCAL_DB_PASSWORD:}
+    password: ${LOCAL_DB_PASSWORD:t6868112A}
   sql:
     init:
       mode: always
@@ -20,6 +20,14 @@ spring:
     port: ${LOCAL_RABBITMQ_PORT:5672}
     username: ${LOCAL_RABBITMQ_USERNAME:guest}
     password: ${LOCAL_RABBITMQ_PASSWORD:guest}
+fluxcore:
+  messaging:
+    approval:
+      exchange: ${APPROVAL_EVENT_EXCHANGE:fluxcore.approval.events}
+      routing-key: ${APPROVAL_EVENT_ROUTING_KEY:approval.event}
+      publish-interval-ms: ${APPROVAL_OUTBOX_PUBLISH_INTERVAL_MS:1000}
+      batch-size: ${APPROVAL_OUTBOX_BATCH_SIZE:50}
+      retry-delay-seconds: ${APPROVAL_OUTBOX_RETRY_DELAY_SECONDS:30}
 business:
   service:
     url: ${LOCAL_BUSINESS_SERVICE_URL:http://127.0.0.1:8082}

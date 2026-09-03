@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS approval_snapshot (
     approval_instance_id BIGINT UNSIGNED NOT NULL COMMENT '所属审批实例 ID',
     node_instance_id BIGINT UNSIGNED NULL COMMENT '对应节点实例 ID，提交快照为空',
     snapshot_no INT UNSIGNED NOT NULL COMMENT '同一实例内快照序号',
-    snapshot_type VARCHAR(32) NOT NULL COMMENT '快照类型：SUBMIT/APPROVE/REJECT/WITHDRAW',
+    snapshot_type VARCHAR(32) NOT NULL COMMENT '快照类型：SUBMIT/APPROVE/REJECT/WITHDRAW/TRANSFER/ADD_SIGN',
     business_type VARCHAR(64) NOT NULL COMMENT '业务类型',
     business_id VARCHAR(128) NOT NULL COMMENT '业务单据 ID',
     data_json JSON NOT NULL COMMENT '审批时的完整业务数据',

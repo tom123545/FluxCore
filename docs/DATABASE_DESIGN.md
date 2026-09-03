@@ -328,7 +328,7 @@ KEY idx_task_instance (approval_instance_id, status)
 | `approval_instance_id` | BIGINT UNSIGNED | NOT NULL | 所属审批实例 |
 | `node_instance_id` | BIGINT UNSIGNED | NULL | 对应节点，提交快照可为空 |
 | `snapshot_no` | INT UNSIGNED | NOT NULL | 同一实例内的快照序号 |
-| `snapshot_type` | VARCHAR(32) | NOT NULL | `SUBMIT`、`APPROVE`、`REJECT`、`WITHDRAW` |
+| `snapshot_type` | VARCHAR(32) | NOT NULL | `SUBMIT`、`APPROVE`、`REJECT`、`WITHDRAW`、`TRANSFER`、`ADD_SIGN` |
 | `business_type` | VARCHAR(64) | NOT NULL | 业务类型 |
 | `business_id` | VARCHAR(128) | NOT NULL | 业务单据 ID |
 | `data_json` | JSON | NOT NULL | 当时的完整业务数据 |

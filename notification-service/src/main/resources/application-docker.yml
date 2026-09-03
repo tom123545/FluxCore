@@ -6,10 +6,6 @@ spring:
     url: ${DB_URL:jdbc:mysql://mysql:3306/fluxcore?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${DB_USERNAME:fluxcore}
     password: ${DB_PASSWORD:fluxcore}
-  jpa:
-    open-in-view: false
-    hibernate:
-      ddl-auto: none
   sql:
     init:
       mode: always
@@ -19,3 +15,9 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:fluxcore}
     password: ${RABBITMQ_PASSWORD:fluxcore}
+fluxcore:
+  messaging:
+    approval:
+      exchange: ${APPROVAL_EVENT_EXCHANGE:fluxcore.approval.events}
+      queue: ${APPROVAL_EVENT_QUEUE:fluxcore.approval.notifications}
+      routing-key: ${APPROVAL_EVENT_ROUTING_KEY:approval.event}

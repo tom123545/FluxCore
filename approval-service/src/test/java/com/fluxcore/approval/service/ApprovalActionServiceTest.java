@@ -15,6 +15,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fluxcore.approval.dto.ApprovalActionRequest;
 import com.fluxcore.approval.dto.ApprovalActionResponse;
+import com.fluxcore.approval.dto.ApprovalAddSignRequest;
+import com.fluxcore.approval.dto.ApprovalTransferRequest;
 import com.fluxcore.approval.dto.BusinessDataResponse;
 import com.fluxcore.approval.entity.ApprovalActionEntity;
 import com.fluxcore.approval.entity.ApprovalInstanceEntity;
@@ -288,6 +290,144 @@ class ApprovalActionServiceTest {
         assertEquals("APPROVED", response.status());
         verify(taskMapper).cancelOtherPendingByNodeInstanceId(40001L, 30001L);
         verify(businessDataClient).markApproved(10001L);
+    }
+
+    @Test
+    void approve_afterAddSign_shouldWaitForAddedTask() {
+        ApprovalActionRequest request = new ApprovalActionRequest("U2001", "ACTION-ADD-SIGN-APPROVE-001", "同意");
+        ApprovalInstanceEntity instance = instance("IN_PROGRESS", 101L, 0L);
+        ApprovalTaskEntity task = task(30001L, 40001L, "U2001", "PENDING");
+        ApprovalNodeInstanceEntity activeNode = nodeInstance(40001L, 101L, "ACTIVE");
+
+        when(actionMapper.selectByActionRequestId(20001L, request.actionRequestId())).thenReturn(null);
+        when(instanceMapper.selectById(20001L)).thenReturn(instance);
+        when(taskMapper.selectById(30001L)).thenReturn(task);
+        when(nodeInstanceMapper.selectActiveByInstanceId(20001L)).thenReturn(activeNode);
+        when(nodeMapper.selectById(101L)).thenReturn(node(101L, "U2001", "SINGLE"));
+        when(transitionMapper.findDefaultNext(10L, 101L)).thenReturn(java.util.Optional.empty());
+        when(businessDataClient.get("PURCHASE", "PUR-001")).thenReturn(businessData("SUBMITTED"));
+        when(taskMapper.updatePendingToApproved(30001L, 20001L, "U2001", "同意")).thenReturn(1);
+        when(taskMapper.countPendingByNodeInstanceId(40001L)).thenReturn(1);
+        doAnswer(invocation -> {
+            ((ApprovalSnapshotEntity) invocation.getArgument(0)).setId(50005L);
+            return 1;
+        }).when(snapshotMapper).insert(any(ApprovalSnapshotEntity.class));
+        when(actionMapper.insert(any(ApprovalActionEntity.class))).thenReturn(1);
+        when(outboxMapper.insert(any(ApprovalOutboxEventEntity.class))).thenReturn(1);
+
+        ApprovalActionResponse response = service.approve(20001L, 30001L, request);
+
+        assertEquals("IN_PROGRESS", response.status());
+        assertEquals(101L, response.currentNodeId());
+        verify(nodeInstanceMapper, never()).markCompleted(anyLong(), anyLong());
+        verify(instanceMapper, never()).updateStatusWithVersion(anyLong(), any(), any(), anyLong());
+        verify(transitionMapper).findDefaultNext(10L, 101L);
+    }
+
+    @Test
+    void transfer_shouldReplacePendingTaskAndWriteHistory() {
+        ApprovalTransferRequest request = new ApprovalTransferRequest("U2001", "ACTION-TRANSFER-001", "U2005", "转给财务代理人");
+        ApprovalInstanceEntity instance = instance("IN_PROGRESS", 101L, 0L);
+        ApprovalTaskEntity task = task(30001L, 40001L, "U2001", "PENDING");
+        ApprovalNodeInstanceEntity activeNode = nodeInstance(40001L, 101L, "ACTIVE");
+
+        when(actionMapper.selectByActionRequestId(20001L, request.actionRequestId())).thenReturn(null);
+        when(instanceMapper.selectById(20001L)).thenReturn(instance);
+        when(taskMapper.selectById(30001L)).thenReturn(task);
+        when(nodeInstanceMapper.selectActiveByInstanceId(20001L)).thenReturn(activeNode);
+        when(nodeMapper.selectById(101L)).thenReturn(node(101L, "U2001", "SINGLE"));
+        when(taskMapper.countPendingByNodeAndAssignee(40001L, "U2005")).thenReturn(0);
+        when(businessDataClient.get("PURCHASE", "PUR-001")).thenReturn(businessData("SUBMITTED"));
+        when(taskMapper.transferPendingTask(30001L, 20001L, "U2001", "转给财务代理人")).thenReturn(1);
+        doAnswer(invocation -> {
+            ((ApprovalTaskEntity) invocation.getArgument(0)).setId(30002L);
+            return 1;
+        }).when(taskMapper).insert(any(ApprovalTaskEntity.class));
+        doAnswer(invocation -> {
+            ((ApprovalSnapshotEntity) invocation.getArgument(0)).setId(50006L);
+            return 1;
+        }).when(snapshotMapper).insert(any(ApprovalSnapshotEntity.class));
+        doAnswer(invocation -> {
+            ((ApprovalActionEntity) invocation.getArgument(0)).setId(60006L);
+            return 1;
+        }).when(actionMapper).insert(any(ApprovalActionEntity.class));
+        when(outboxMapper.insert(any(ApprovalOutboxEventEntity.class))).thenReturn(1);
+
+        ApprovalActionResponse response = service.transfer(20001L, 30001L, request);
+
+        assertEquals("IN_PROGRESS", response.status());
+        assertEquals("TRANSFER", response.actionType());
+        assertEquals(60006L, response.actionId());
+        ArgumentCaptor<ApprovalTaskEntity> taskCaptor = ArgumentCaptor.forClass(ApprovalTaskEntity.class);
+        verify(taskMapper).insert(taskCaptor.capture());
+        assertEquals("U2005", taskCaptor.getValue().getAssigneeId());
+        assertEquals(30001L, taskCaptor.getValue().getSourceTaskId());
+        assertEquals("PENDING", taskCaptor.getValue().getStatus());
+        ArgumentCaptor<ApprovalSnapshotEntity> snapshotCaptor = ArgumentCaptor.forClass(ApprovalSnapshotEntity.class);
+        verify(snapshotMapper).insert(snapshotCaptor.capture());
+        assertEquals("TRANSFER", snapshotCaptor.getValue().getSnapshotType());
+        verify(taskMapper).transferPendingTask(30001L, 20001L, "U2001", "转给财务代理人");
+    }
+
+    @Test
+    void addSign_shouldCreatePendingTaskAndWriteHistory() {
+        ApprovalAddSignRequest request = new ApprovalAddSignRequest("U2001", "ACTION-ADD-SIGN-001", "U2005", "增加财务复核");
+        ApprovalInstanceEntity instance = instance("IN_PROGRESS", 101L, 0L);
+        ApprovalTaskEntity task = task(30001L, 40001L, "U2001", "PENDING");
+        ApprovalNodeInstanceEntity activeNode = nodeInstance(40001L, 101L, "ACTIVE");
+
+        when(actionMapper.selectByActionRequestId(20001L, request.actionRequestId())).thenReturn(null);
+        when(instanceMapper.selectById(20001L)).thenReturn(instance);
+        when(taskMapper.selectById(30001L)).thenReturn(task);
+        when(nodeInstanceMapper.selectActiveByInstanceId(20001L)).thenReturn(activeNode);
+        when(nodeMapper.selectById(101L)).thenReturn(node(101L, "U2001", "SINGLE"));
+        when(taskMapper.countPendingByNodeAndAssignee(40001L, "U2005")).thenReturn(0);
+        when(businessDataClient.get("PURCHASE", "PUR-001")).thenReturn(businessData("SUBMITTED"));
+        doAnswer(invocation -> {
+            ((ApprovalTaskEntity) invocation.getArgument(0)).setId(30003L);
+            return 1;
+        }).when(taskMapper).insert(any(ApprovalTaskEntity.class));
+        doAnswer(invocation -> {
+            ((ApprovalSnapshotEntity) invocation.getArgument(0)).setId(50007L);
+            return 1;
+        }).when(snapshotMapper).insert(any(ApprovalSnapshotEntity.class));
+        doAnswer(invocation -> {
+            ((ApprovalActionEntity) invocation.getArgument(0)).setId(60007L);
+            return 1;
+        }).when(actionMapper).insert(any(ApprovalActionEntity.class));
+        when(outboxMapper.insert(any(ApprovalOutboxEventEntity.class))).thenReturn(1);
+
+        ApprovalActionResponse response = service.addSign(20001L, 30001L, request);
+
+        assertEquals("IN_PROGRESS", response.status());
+        assertEquals("ADD_SIGN", response.actionType());
+        assertEquals(60007L, response.actionId());
+        ArgumentCaptor<ApprovalTaskEntity> taskCaptor = ArgumentCaptor.forClass(ApprovalTaskEntity.class);
+        verify(taskMapper).insert(taskCaptor.capture());
+        assertEquals("U2005", taskCaptor.getValue().getAssigneeId());
+        assertEquals(30001L, taskCaptor.getValue().getSourceTaskId());
+        assertEquals("PENDING", taskCaptor.getValue().getStatus());
+        ArgumentCaptor<ApprovalSnapshotEntity> snapshotCaptor = ArgumentCaptor.forClass(ApprovalSnapshotEntity.class);
+        verify(snapshotMapper).insert(snapshotCaptor.capture());
+        assertEquals("ADD_SIGN", snapshotCaptor.getValue().getSnapshotType());
+    }
+
+    @Test
+    void addSign_whenTargetAlreadyHasPendingTask_shouldReturnConflict() {
+        ApprovalAddSignRequest request = new ApprovalAddSignRequest("U2001", "ACTION-ADD-SIGN-002", "U2005", null);
+        when(actionMapper.selectByActionRequestId(20001L, request.actionRequestId())).thenReturn(null);
+        when(instanceMapper.selectById(20001L)).thenReturn(instance("IN_PROGRESS", 101L, 0L));
+        when(taskMapper.selectById(30001L)).thenReturn(task(30001L, 40001L, "U2001", "PENDING"));
+        when(nodeInstanceMapper.selectActiveByInstanceId(20001L)).thenReturn(nodeInstance(40001L, 101L, "ACTIVE"));
+        when(nodeMapper.selectById(101L)).thenReturn(node(101L, "U2001", "SINGLE"));
+        when(taskMapper.countPendingByNodeAndAssignee(40001L, "U2005")).thenReturn(1);
+
+        ApprovalActionException exception = assertThrows(ApprovalActionException.class,
+                () -> service.addSign(20001L, 30001L, request));
+
+        assertEquals("TARGET_TASK_ALREADY_EXISTS", exception.getCode());
+        verify(taskMapper, never()).insert(any(ApprovalTaskEntity.class));
+        verify(businessDataClient, never()).get(any(), any());
     }
 
     private ApprovalInstanceEntity instance(String status, long currentNodeId, long lockVersion) {

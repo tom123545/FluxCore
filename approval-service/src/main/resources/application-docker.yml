@@ -20,6 +20,14 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:fluxcore}
     password: ${RABBITMQ_PASSWORD:fluxcore}
+fluxcore:
+  messaging:
+    approval:
+      exchange: ${APPROVAL_EVENT_EXCHANGE:fluxcore.approval.events}
+      routing-key: ${APPROVAL_EVENT_ROUTING_KEY:approval.event}
+      publish-interval-ms: ${APPROVAL_OUTBOX_PUBLISH_INTERVAL_MS:1000}
+      batch-size: ${APPROVAL_OUTBOX_BATCH_SIZE:50}
+      retry-delay-seconds: ${APPROVAL_OUTBOX_RETRY_DELAY_SECONDS:30}
 business:
   service:
     url: ${BUSINESS_SERVICE_URL:http://business-service:8082}
