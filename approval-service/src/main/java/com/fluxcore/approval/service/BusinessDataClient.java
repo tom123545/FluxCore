@@ -33,4 +33,34 @@ public class BusinessDataClient {
                 })
                 .toBodilessEntity();
     }
+
+    public void markWithdrawn(long applicationId) {
+        restClient.post()
+                .uri("/api/internal/applications/{applicationId}/withdraw", applicationId)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw new IllegalStateException("业务申请撤回状态更新失败: " + response.getStatusCode());
+                })
+                .toBodilessEntity();
+    }
+
+    public void markRejected(long applicationId) {
+        restClient.post()
+                .uri("/api/internal/applications/{applicationId}/reject", applicationId)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw new IllegalStateException("业务申请驳回状态更新失败: " + response.getStatusCode());
+                })
+                .toBodilessEntity();
+    }
+
+    public void markApproved(long applicationId) {
+        restClient.post()
+                .uri("/api/internal/applications/{applicationId}/approve", applicationId)
+                .retrieve()
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw new IllegalStateException("业务申请通过状态更新失败: " + response.getStatusCode());
+                })
+                .toBodilessEntity();
+    }
 }

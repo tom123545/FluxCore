@@ -121,8 +121,77 @@ public class BusinessApplicationService {
     @Transactional
     public void markSubmitted(long applicationId) {
         ApplicationEntity application = Optional.ofNullable(applicationMapper.selectById(applicationId)).orElseThrow(() -> new IllegalArgumentException("申请不存在: " + applicationId));
-        if (DRAFT.equals(application.getStatus())) { if (applicationMapper.markSubmitted(applicationId) != 1) throw new IllegalStateException("申请提交状态更新失败"); }
+        if (DRAFT.equals(application.getStatus())) {
+            if (applicationMapper.markSubmitted(applicationId) != 1) throw new IllegalStateException("申请提交状态更新失败");
+            if (PURCHASE.equals(application.getBusinessType())) {
+                if (procurementRequestMapper.markSubmitted(applicationId) != 1) throw new IllegalStateException("采购申请提交状态更新失败");
+            } else if (CONTRACT_CHANGE.equals(application.getBusinessType())) {
+                if (contractChangeRequestMapper.markSubmitted(applicationId) != 1) throw new IllegalStateException("合同变更申请提交状态更新失败");
+            }
+        }
         else if (!"SUBMITTED".equals(application.getStatus())) throw new IllegalStateException("只有草稿申请可以提交");
+    }
+
+    @Transactional
+    public void markWithdrawn(long applicationId) {
+        ApplicationEntity application = Optional.ofNullable(applicationMapper.selectById(applicationId))
+                .orElseThrow(() -> new IllegalArgumentException("申请不存在: " + applicationId));
+        if ("SUBMITTED".equals(application.getStatus())) {
+            if (applicationMapper.markWithdrawn(applicationId) != 1) {
+                throw new IllegalStateException("申请撤回状态更新失败");
+            }
+            if (PURCHASE.equals(application.getBusinessType())) {
+                if (procurementRequestMapper.markWithdrawn(applicationId) != 1) {
+                    throw new IllegalStateException("采购申请撤回状态更新失败");
+                }
+            } else if (CONTRACT_CHANGE.equals(application.getBusinessType())) {
+                if (contractChangeRequestMapper.markWithdrawn(applicationId) != 1) {
+                    throw new IllegalStateException("合同变更申请撤回状态更新失败");
+                }
+            }
+        } else if (!"WITHDRAWN".equals(application.getStatus())) {
+            throw new IllegalStateException("只有已提交申请可以撤回");
+        }
+    }
+
+    @Transactional
+    public void markRejected(long applicationId) {
+        ApplicationEntity application = Optional.ofNullable(applicationMapper.selectById(applicationId))
+                .orElseThrow(() -> new IllegalArgumentException("申请不存在: " + applicationId));
+        if ("SUBMITTED".equals(application.getStatus())) {
+            if (applicationMapper.markRejected(applicationId) != 1) throw new IllegalStateException("申请驳回状态更新失败");
+        } else if (!"REJECTED".equals(application.getStatus())) {
+            throw new IllegalStateException("只有已提交申请可以驳回");
+        }
+        if (PURCHASE.equals(application.getBusinessType())) {
+            if (procurementRequestMapper.markRejected(applicationId) != 1
+                    && procurementRequestMapper.selectByApplicationId(applicationId) == null) {
+                throw new IllegalStateException("采购申请驳回状态更新失败");
+            }
+        } else if (CONTRACT_CHANGE.equals(application.getBusinessType())) {
+            if (contractChangeRequestMapper.markRejected(applicationId) != 1
+                    && contractChangeRequestMapper.selectByApplicationId(applicationId) == null) {
+                throw new IllegalStateException("合同变更申请驳回状态更新失败");
+            }
+        }
+    }
+
+    @Transactional
+    public void markApproved(long applicationId) {
+        ApplicationEntity application = Optional.ofNullable(applicationMapper.selectById(applicationId))
+                .orElseThrow(() -> new IllegalArgumentException("申请不存在: " + applicationId));
+        if ("SUBMITTED".equals(application.getStatus())) {
+            if (applicationMapper.markApproved(applicationId) != 1) {
+                throw new IllegalStateException("申请通过状态更新失败");
+            }
+        } else if (!"APPROVED".equals(application.getStatus())) {
+            throw new IllegalStateException("只有已提交申请可以通过");
+        }
+        if (PURCHASE.equals(application.getBusinessType())) {
+            procurementRequestMapper.markApproved(applicationId);
+        } else if (CONTRACT_CHANGE.equals(application.getBusinessType())) {
+            contractChangeRequestMapper.markApproved(applicationId);
+        }
     }
 
     private long insertApplication(ApplicationEntity application) {

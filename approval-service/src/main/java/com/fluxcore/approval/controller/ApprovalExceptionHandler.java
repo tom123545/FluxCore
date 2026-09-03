@@ -2,6 +2,7 @@ package com.fluxcore.approval.controller;
 
 import com.fluxcore.approval.dto.ApiErrorResponse;
 import com.fluxcore.approval.service.ApprovalSubmitException;
+import com.fluxcore.approval.service.ApprovalActionException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -11,6 +12,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class ApprovalExceptionHandler {
     @ExceptionHandler(ApprovalSubmitException.class)
     public ResponseEntity<ApiErrorResponse> handleSubmit(ApprovalSubmitException exception) {
+        return ResponseEntity.status(exception.getStatus()).body(new ApiErrorResponse(exception.getCode(), exception.getMessage()));
+    }
+
+    @ExceptionHandler(ApprovalActionException.class)
+    public ResponseEntity<ApiErrorResponse> handleAction(ApprovalActionException exception) {
         return ResponseEntity.status(exception.getStatus()).body(new ApiErrorResponse(exception.getCode(), exception.getMessage()));
     }
 

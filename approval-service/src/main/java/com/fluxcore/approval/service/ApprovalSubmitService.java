@@ -26,6 +26,8 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
@@ -98,9 +100,7 @@ public class ApprovalSubmitService {
                     .orElseThrow(() -> new ApprovalSubmitException("PROCESS_NOT_FOUND", "没有找到已发布的审批流程: " + request.businessType(), HttpStatus.UNPROCESSABLE_ENTITY));
             ApprovalNodeEntity firstNode = processMapper.findFirstApprovalNode(process.getId())
                     .orElseThrow(() -> new ApprovalSubmitException("APPROVAL_NODE_NOT_FOUND", "审批流程没有可执行的审批节点", HttpStatus.UNPROCESSABLE_ENTITY));
-            if (firstNode.getApproverValue() == null || firstNode.getApproverValue().isBlank()) {
-                throw new ApprovalSubmitException("APPROVER_NOT_CONFIGURED", "首个审批节点未配置审批人", HttpStatus.UNPROCESSABLE_ENTITY);
-            }
+            List<String> firstApprovers = resolveApprovers(firstNode);
 
             ApprovalInstanceEntity instance = new ApprovalInstanceEntity();
             instance.setApprovalNo("APR-" + shortUuid());
@@ -127,12 +127,16 @@ public class ApprovalSubmitService {
             nodeInstance.setStartedAt(LocalDateTime.now());
             nodeInstanceMapper.insert(nodeInstance);
 
-            ApprovalTaskEntity task = new ApprovalTaskEntity();
-            task.setApprovalInstanceId(instance.getId());
-            task.setNodeInstanceId(nodeInstance.getId());
-            task.setAssigneeId(firstNode.getApproverValue());
-            task.setStatus("PENDING");
-            taskMapper.insert(task);
+            ApprovalTaskEntity task = null;
+            for (String approver : firstApprovers) {
+                ApprovalTaskEntity candidate = new ApprovalTaskEntity();
+                candidate.setApprovalInstanceId(instance.getId());
+                candidate.setNodeInstanceId(nodeInstance.getId());
+                candidate.setAssigneeId(approver);
+                candidate.setStatus("PENDING");
+                taskMapper.insert(candidate);
+                if (task == null) task = candidate;
+            }
 
             String snapshotJson = writeJson(businessData);
             ApprovalSnapshotEntity snapshot = new ApprovalSnapshotEntity();
@@ -189,6 +193,23 @@ public class ApprovalSubmitService {
         if (!request.applicantId().equals(data.applicantId())) {
             throw new ApprovalSubmitException("APPLICANT_MISMATCH", "申请人与业务申请人不一致", HttpStatus.BAD_REQUEST);
         }
+    }
+
+    private List<String> resolveApprovers(ApprovalNodeEntity node) {
+        String mode = node.getApprovalMode() == null || node.getApprovalMode().isBlank()
+                ? "SINGLE" : node.getApprovalMode().trim().toUpperCase(Locale.ROOT);
+        List<String> approvers = node.getApproverValue() == null ? List.of() : java.util.Arrays.stream(node.getApproverValue().split("[,，]"))
+                .map(String::trim).filter(value -> !value.isBlank()).distinct().toList();
+        if (approvers.isEmpty()) {
+            throw new ApprovalSubmitException("APPROVER_NOT_CONFIGURED", "审批节点未配置审批人", HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+        if (!("SINGLE".equals(mode) || "OR".equals(mode))) {
+            throw new ApprovalSubmitException("APPROVAL_MODE_UNSUPPORTED", "不支持的审批模式: " + mode, HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+        if ("SINGLE".equals(mode) && approvers.size() != 1) {
+            throw new ApprovalSubmitException("APPROVER_CONFIG_INVALID", "SINGLE 节点只能配置一个审批人", HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+        return approvers;
     }
 
     private void validateExisting(SubmitApprovalRequest request, ApprovalInstanceEntity instance) {

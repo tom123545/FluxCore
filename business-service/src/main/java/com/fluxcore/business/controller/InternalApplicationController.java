@@ -19,4 +19,18 @@ public class InternalApplicationController {
     public void markSubmitted(@PathVariable long applicationId) {
         applicationService.markSubmitted(applicationId);
     }
+
+    @PostMapping("/{applicationId}/withdraw")
+    public void markWithdrawn(@PathVariable long applicationId) {
+        applicationService.markWithdrawn(applicationId);
+    }
+
+    @PostMapping("/{applicationId}/reject")
+    public void markRejected(@PathVariable long applicationId) {
+        applicationService.markRejected(applicationId);
+    }
+    @PostMapping("/{applicationId}/approve")
+    public void markApproved(@PathVariable long applicationId) {
+        applicationService.markApproved(applicationId);
+    }
 }

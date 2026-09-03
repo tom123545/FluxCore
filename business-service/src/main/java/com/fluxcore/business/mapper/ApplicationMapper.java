@@ -19,4 +19,14 @@ public interface ApplicationMapper extends BaseMapper<ApplicationEntity> {
 
     @Update("UPDATE application SET status = 'SUBMITTED', submitted_at = NOW(3), updated_at = NOW(3), version = version + 1 WHERE id = #{applicationId} AND status = 'DRAFT'")
     int markSubmitted(@Param("applicationId") long applicationId);
+
+    @Update("UPDATE application SET status = 'REJECTED', updated_at = NOW(3), version = version + 1 WHERE id = #{applicationId} AND status = 'SUBMITTED'")
+    int markRejected(@Param("applicationId") long applicationId);
+
+    @Update("UPDATE application SET status = 'APPROVED', updated_at = NOW(3), version = version + 1 WHERE id = #{applicationId} AND status = 'SUBMITTED'")
+    int markApproved(@Param("applicationId") long applicationId);
+
+    @Update("UPDATE application SET status = 'WITHDRAWN', updated_at = NOW(3), version = version + 1 WHERE id = #{applicationId} AND status = 'SUBMITTED'")
+    int markWithdrawn(@Param("applicationId") long applicationId);
+
 }

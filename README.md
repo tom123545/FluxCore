@@ -68,6 +68,7 @@ Docker profile 使用 Compose 服务名 `mysql`、`redis`、`rabbitmq`，账号�
 
 ## 文档
 
+- [后续模型开发交接文档](docs/MODEL_HANDOFF.md)
 - [实施计划](docs/IMPLEMENTATION_PLAN.md)
 - [架构设计](docs/ARCHITECTURE.md)
 - [技术方案](docs/TECHNICAL_DESIGN.md)
