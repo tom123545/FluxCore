@@ -1,6 +1,7 @@
 package com.fluxcore.notification.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -63,5 +64,27 @@ class ApprovalNotificationServiceTest {
 
         verify(recordMapper, never()).insert(any(NotificationRecordEntity.class));
         verify(recordMapper, never()).markSent(any(Long.class), any(), any());
+    }
+
+    @Test
+    void handle_whenEventHasNoReceiver_shouldRejectAndNotPersistNotification() {
+        when(recordMapper.selectByEventId("event-2")).thenReturn(null);
+
+        assertThrows(IllegalArgumentException.class, () -> service.handle("""
+                {"eventId":"event-2","eventType":"APPROVAL_APPROVED",
+                 "data":{"approvalInstanceId":20001}}
+                """));
+
+        verify(recordMapper, never()).insert(any(NotificationRecordEntity.class));
+        verify(recordMapper, never()).markSent(any(Long.class), any(), any());
+    }
+
+    @Test
+    void handle_whenEventIdIsMissing_shouldRejectAsMalformedMessage() {
+        assertThrows(IllegalArgumentException.class, () -> service.handle("""
+                {"eventType":"APPROVAL_SUBMITTED","data":{"assigneeId":"U2001"}}
+                """));
+
+        verify(recordMapper, never()).selectByEventId(any());
     }
 }

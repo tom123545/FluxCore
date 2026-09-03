@@ -35,4 +35,14 @@ class ApprovalStateMachineTest {
         assertFalse(stateMachine.canTransitionNode("COMPLETED", "ACTIVE"));
         assertFalse(stateMachine.canTransitionNode("ACTIVE", "ACTIVE"));
     }
+
+    @Test
+    void malformedState_shouldNeverBeAccepted() {
+        assertFalse(stateMachine.canTransitionInstance(null, "APPROVED"));
+        assertFalse(stateMachine.canTransitionTask(" ", "APPROVED"));
+        assertFalse(stateMachine.canTransitionNode("UNKNOWN", "COMPLETED"));
+        assertTrue(stateMachine.isInstanceActionable(" IN_PROGRESS "));
+        assertTrue(stateMachine.isTaskActionable(" pending "));
+        assertFalse(stateMachine.isInstanceActionable("IN_PROGRESS_UNKNOWN"));
+    }
 }
