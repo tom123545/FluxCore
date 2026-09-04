@@ -1,6 +1,7 @@
 package com.fluxcore.business.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fluxcore.business.dto.ApplicationResponse;
@@ -74,7 +75,7 @@ public class BusinessApplicationService {
             entity.setItemName(item.getItemName()); entity.setQuantity(item.getQuantity()); entity.setUnitPrice(item.getUnitPrice());
             entity.setAmount(item.getQuantity().multiply(item.getUnitPrice())); procurementItemMapper.insert(entity);
         }
-        insertExtension(applicationId, request); application.setId(applicationId); return toResponse(application);
+        insertExtension(applicationId, request, request.getRemark()); application.setId(applicationId); return toResponse(application);
     }
 
     @Transactional
@@ -93,7 +94,7 @@ public class BusinessApplicationService {
             entity.setFieldName(item.getFieldName()); entity.setOldValue(item.getOldValue()); entity.setNewValue(item.getNewValue());
             contractChangeItemMapper.insert(entity);
         }
-        insertExtension(applicationId, request); application.setId(applicationId); return toResponse(application);
+        insertExtension(applicationId, request, request.getRemark()); application.setId(applicationId); return toResponse(application);
     }
 
     @Transactional(readOnly = true)
@@ -115,6 +116,7 @@ public class BusinessApplicationService {
                 ObjectNode node = items.addObject(); node.put("fieldName", item.getFieldName()); node.put("oldValue", item.getOldValue()); node.put("newValue", item.getNewValue());
             });
         } else throw new IllegalArgumentException("不支持的业务类型: " + businessType);
+        addExtensionData(data, applicationExtMapper.selectByApplicationId(application.getId()));
         return new BusinessDataResponse(application.getId(), application.getApplicationNo(), businessType, businessId, application.getTitle(), application.getApplicantId(), application.getStatus(), data);
     }
 
@@ -207,9 +209,33 @@ public class BusinessApplicationService {
     }
     private String nextBusinessId(String prefix) { return prefix + "-" + shortUuid(); }
     private String shortUuid() { return UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(); }
-    private void insertExtension(long applicationId, Object request) {
-        try { ApplicationExtEntity entity = new ApplicationExtEntity(); entity.setApplicationId(applicationId); entity.setFormData(objectMapper.writeValueAsString(request)); applicationExtMapper.insert(entity); }
+    private void insertExtension(long applicationId, Object request, String remark) {
+        try {
+            ApplicationExtEntity entity = new ApplicationExtEntity();
+            entity.setApplicationId(applicationId);
+            entity.setFormData(objectMapper.writeValueAsString(request));
+            entity.setRemark(remark);
+            applicationExtMapper.insert(entity);
+        }
         catch (JsonProcessingException exception) { throw new IllegalStateException("申请扩展数据序列化失败", exception); }
+    }
+
+    private void addExtensionData(ObjectNode data, ApplicationExtEntity extension) {
+        if (extension == null || extension.getFormData() == null || extension.getFormData().isBlank()) {
+            data.set("formData", objectMapper.createObjectNode());
+        } else {
+            try {
+                JsonNode formData = objectMapper.readTree(extension.getFormData());
+                data.set("formData", formData == null ? objectMapper.createObjectNode() : formData);
+            } catch (JsonProcessingException exception) {
+                throw new IllegalStateException("申请扩展数据已损坏，无法生成业务快照", exception);
+            }
+        }
+        if (extension == null || extension.getRemark() == null) {
+            data.putNull("remark");
+        } else {
+            data.put("remark", extension.getRemark());
+        }
     }
     private ApplicationResponse toResponse(ApplicationEntity e) { return new ApplicationResponse(e.getId(), e.getApplicationNo(), e.getBusinessType(), e.getBusinessId(), e.getTitle(), e.getApplicantId(), e.getStatus()); }
 }

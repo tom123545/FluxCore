@@ -2,11 +2,12 @@
 
 请先阅读：
 
-1. `docs/MODEL_HANDOFF.md`（当前最完整的实际状态和开发路线）
-2. 根目录 `README.md`
-3. `docs/IMPLEMENTATION_PLAN.md`
-4. `docs/ARCHITECTURE.md`
-5. `docs/DATABASE_DESIGN.md`
+1. 根目录 `design.md`（当前最简洁的系统设计总览）
+2. `docs/MODEL_HANDOFF.md`（当前最完整的实际状态和开发路线）
+3. 根目录 `README.md`
+4. `docs/IMPLEMENTATION_PLAN.md`
+5. `docs/ARCHITECTURE.md`
+6. `docs/DATABASE_DESIGN.md`
 
 当前基线：
 

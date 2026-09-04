@@ -24,11 +24,11 @@
 | 异步通知 | 通知失败不回滚审批主流程，并支持重试 |
 | 工程形态 | 可运行的多服务/API 优先项目，保留架构和设计取舍说明 |
 
-其中，需求中的“采购串行、合同并行”是验收建议。当前种子数据配置了采购三级串行节点和合同两级节点，但代码尚未实现完整节点推进，因此不能把该场景称为已验收完成。
+其中，采购三级串行和合同两级串行已经完成本机 E2E 验证；并行、条件分支和更复杂的会签仍属于后续扩展。
 
 ## 3. 当前总体结论
 
-当前项目处于“申请创建 + 提交审批首节点”的可运行原型阶段，尚未完成从提交到最终通过/驳回/撤回的完整审批闭环。
+当前项目已经完成采购/合同的本地闭环：创建、提交、通过、驳回、撤回、转审、加签、查询、Outbox 和通知消费均已落地，并通过本机 MySQL/Redis/RabbitMQ 完成真实 E2E。并行、条件分支和完整会签仍是后续扩展。
 
 按需求完成度估算：
 
@@ -40,18 +40,18 @@
 | 统一业务数据读取 | 已完成首版 | 通过内部接口按业务类型拼装快照数据 |
 | 提交审批 | 已完成首版 | 校验业务、匹配已发布流程、创建审批实例和首个待办 |
 | 提交幂等 | 已实现 | Redis 提交锁 + 数据库唯一约束 + 重复结果返回 |
-| 提交快照和提交历史 | 已实现首版 | 提交时写入一条不可变快照、一条动作记录 |
-| 审批通过/驳回/撤回 | 未实现 | 当前没有对应 Controller、DTO 和 Service 方法 |
-| 节点完整流转 | 未实现 | 只创建首节点，没有读取 transition 并推进下一节点的代码 |
-| 并行、条件、会签、或签 | 未实现 | 表字段有预留，运行时模型和状态机尚未完成 |
-| 待办/已办查询 | 未实现 | 当前只创建首个 `PENDING` 任务 |
-| 转审、加签、委托 | 未实现 | 任务表留有 `source_task_id`，没有动作接口 |
-| 审批动作并发控制 | 未实现 | 尚无审批动作接口、动作锁和乐观锁更新 |
-| Outbox 发布和通知消费 | 未实现 | 当前只落库 `approval_outbox_event`，没有发布器和 RabbitMQ Listener |
-| 网关路由、鉴权 | 骨架 | gateway 目前只有 ping 接口，没有统一路由和认证过滤器 |
-| 自动化验证 | 部分完成 | 有提交服务单元测试；完整双业务链路和并发集成测试未完成 |
+| 提交快照和提交历史 | 已完成 | 提交时写入不可变快照和动作记录 |
+| 审批通过/驳回/撤回 | 已完成 | 对应 Controller、DTO 和 Service 已落地 |
+| 节点完整流转 | 已完成首版 | 串行流程会读取 `approval_transition` 并推进下一节点 |
+| 并行、条件、会签、或签 | 部分完成 | 当前支持 `SINGLE` 和 `OR`，`AND`、并行和条件分支仍待扩展 |
+| 待办/已办查询 | 已完成 | 已按审批人查询 `todo` 和 `done` |
+| 转审、加签、委托 | 转审/加签已完成 | 委托明确不在本期范围 |
+| 审批动作并发控制 | 已完成 | 已接入动作锁、条件更新和 `lock_version` |
+| Outbox 发布和通知消费 | 已完成 | 已有发布器、RabbitMQ Listener 和通知去重 |
+| 网关路由、鉴权 | 部分完成 | 已可转发主要业务和审批路径，认证仍是基础版 |
+| 自动化验证 | 已完成 | 62 个测试通过，真实本地 E2E 已完成 |
 
-因此，当前更准确的项目阶段是：**Phase 0 已完成，Phase 1/2/3/4 已完成一部分，尚未达到需求要求的完整审批闭环**。
+因此，当前更准确的项目阶段是：**核心审批闭环已完成并可本地演示，后续主要是生产加固和扩展能力**。
 
 ## 4. 当前代码中的接口清单
 
@@ -61,7 +61,15 @@
 |---|---|---|---|---|
 | `POST` | `/api/business/applications/purchase` | business-service | 创建采购申请草稿 | 已实现 |
 | `POST` | `/api/business/applications/contract` | business-service | 创建合同变更申请草稿 | 已实现 |
-| `POST` | `/api/approvals` | approval-service | 提交任意业务类型的审批 | 已实现首版 |
+| `POST` | `/api/approvals` | approval-service | 提交任意业务类型的审批 | 已实现 |
+| `GET` | `/api/approvals/{approvalInstanceId}` | approval-service | 查询审批实例详情 | 已实现 |
+| `GET` | `/api/approvals/{approvalInstanceId}/history` | approval-service | 查询审批历史 | 已实现 |
+| `GET` | `/api/approvals/{approvalInstanceId}/snapshots` | approval-service | 查询审批快照 | 已实现 |
+| `POST` | `/api/approvals/{approvalInstanceId}/withdraw` | approval-service | 申请人撤回审批 | 已实现 |
+| `POST` | `/api/approvals/{approvalInstanceId}/tasks/{taskId}/approve` | approval-service | 审批通过 | 已实现 |
+| `POST` | `/api/approvals/{approvalInstanceId}/tasks/{taskId}/reject` | approval-service | 审批驳回 | 已实现 |
+| `POST` | `/api/approvals/{approvalInstanceId}/tasks/{taskId}/transfer` | approval-service | 转审 | 已实现 |
+| `POST` | `/api/approvals/{approvalInstanceId}/tasks/{taskId}/add-sign` | approval-service | 加签 | 已实现 |
 
 创建接口使用不同路径，是因为采购和合同的业务字段、校验规则和明细模型不同；提交接口保持统一，是因为提交之后的流程执行、任务、动作、快照和事件都是审批域的通用能力。
 
@@ -71,6 +79,9 @@
 |---|---|---|---|---|
 | `GET` | `/api/internal/business-data/{businessType}/{businessId}` | approval-service | 获取业务详情，生成审批快照 | 已实现 |
 | `POST` | `/api/internal/applications/{applicationId}/submit` | approval-service | 将业务申请从 `DRAFT` 改为 `SUBMITTED` | 已实现 |
+| `POST` | `/api/internal/applications/{applicationId}/withdraw` | approval-service | 将业务申请改为 `WITHDRAWN` | 已实现 |
+| `POST` | `/api/internal/applications/{applicationId}/reject` | approval-service | 将业务申请改为 `REJECTED` | 已实现 |
+| `POST` | `/api/internal/applications/{applicationId}/approve` | approval-service | 将业务申请改为 `APPROVED` | 已实现 |
 
 内部接口与对外接口分开，避免审批服务直接访问采购表、合同表，也避免业务服务掌握审批状态机。当前部署是一库多表，但服务边界仍通过接口维护。
 
@@ -103,7 +114,7 @@
 
 ### 5.2 业务数据读取：为什么使用内部 HTTP API
 
-审批服务通过 `BusinessDataClient` 调用：
+审批服务通过 `BusinessDataClient` 调用，并由 `HttpClientConfig` 统一注入 `X-Internal-Token`：
 
 ```text
 GET /api/internal/business-data/{businessType}/{businessId}
@@ -122,10 +133,16 @@ GET /api/internal/business-data/{businessType}/{businessId}
   "status": "DRAFT",
   "data": {
     "totalAmount": 1280.00,
+    "formData": {
+      "costCenter": "CC-1001"
+    },
+    "remark": "采购审批备注",
     "items": []
   }
 }
 ```
+
+其中 `data.formData` 和 `data.remark` 来自 `application_ext`。审批服务会将整个响应序列化到 `approval_snapshot.data_json`，因此提交和后续关键审批动作的快照都包含申请扩展字段及备注。
 
 这不是为了追求复杂的微服务通信，而是为了落实“审批服务不直接 Join 业务表”的边界。后续可以把 `BusinessDataClient` 抽象为 `BusinessDataProvider`，按 `businessType` 注册不同适配器；审批状态机不需要感知采购或合同字段。
 
@@ -168,7 +185,7 @@ GET /api/internal/business-data/{businessType}/{businessId}
 - 首节点、待办、快照、历史和事件放在审批本地事务内，保证审批库内部不会只落一半；
 - 业务状态更新仍通过内部 API 完成，因为两个服务之间没有本地分布式事务。
 
-当前实现只推进到首个审批节点，尚未执行最后的“根据 transition 计算下一个节点”。
+当前实现已经会在通过时读取 `approval_transition` 推进到下一节点，末级通过则结束实例并同步业务状态。
 
 ### 5.4 提交幂等：为什么不是只依赖 Redis
 
@@ -194,7 +211,7 @@ Redis `SETNX + TTL` 用于拦截短时间内的重复执行，释放锁时通过
 
 这样设计是因为审批过程中业务数据可能继续变化。历史页面必须展示“当时审批人看到的版本”，而不是业务表当前值。后续每一级审批动作都应重新调用业务数据接口并新增快照，旧快照不更新。
 
-当前只实现 `SUBMIT` 快照，尚无审批动作快照和历史查询接口；因此“快照模型已经存在”不等于“历史功能已经完成”。
+提交、通过、驳回、撤回、转审和加签都会写入快照，历史与快照查询接口也已可直接使用。
 
 ### 5.6 Outbox：为什么先写表再异步发消息
 
@@ -207,7 +224,7 @@ Redis `SETNX + TTL` 用于拦截短时间内的重复执行，释放锁时通过
 - 消费端使用 `eventId` 去重，允许至少一次投递；
 - 通知失败不会回滚已经完成的审批事务。
 
-当前只完成“写 Outbox”，还没有 `@Scheduled` 发布器、RabbitMQ Exchange/Queue 配置、通知消费者和通知重试实现。
+当前已经具备 `@Scheduled` 发布器、RabbitMQ Exchange/Queue 配置、通知消费者和重试机制；主流程不依赖 RabbitMQ 可用性。
 
 ## 6. 数据模型为什么这样拆分
 
@@ -215,7 +232,7 @@ Redis `SETNX + TTL` 用于拦截短时间内的重复执行，释放锁时通过
 |---|---|---|
 | `approval_process` | 流程定义、业务类型、版本、发布状态 | 已用于匹配已发布流程 |
 | `approval_node` | 流程模板节点和审批人规则 | 已用于选择首节点 |
-| `approval_transition` | 节点之间的连线、条件、优先级 | 只有 SQL 表和种子关系，运行时代码未使用 |
+| `approval_transition` | 节点之间的连线、条件、优先级 | 已被运行时读取并用于节点推进 |
 | `approval_instance` | 一次真实审批及其状态 | 已创建 |
 | `approval_node_instance` | 一次审批实际执行到的节点 | 首节点已创建 |
 | `approval_task` | 具体审批人的待办/已办 | 首个待办已创建 |
@@ -225,11 +242,11 @@ Redis `SETNX + TTL` 用于拦截短时间内的重复执行，释放锁时通过
 
 流程模板与运行实例分开，是为了让流程版本可发布、可追溯；节点实例与节点模板分开，是为了记录本次审批实际走过的路径；任务单独建表，是为了支持一个节点对应多个审批人以及待办/已办查询。
 
-需要特别注意：当前 Java 代码没有 `ApprovalTransitionEntity` 和 `ApprovalTransitionMapper`。因此数据库虽已为条件和并行预留结构，实际状态机还不能读取这些配置。
+需要特别注意：当前 Java 代码已经有 `ApprovalTransitionEntity` 和 `ApprovalTransitionMapper`，但只实现了串行和或签的运行时路径；条件和并行仍需继续扩展。
 
 ## 7. 后续接口方案
 
-以下接口是满足需求所需的下一步设计，不代表当前已经实现。
+以下接口均已实现，路径以当前代码为准。
 
 ### 7.1 审批实例和历史查询
 
@@ -244,8 +261,8 @@ GET /api/approvals/{approvalInstanceId}/snapshots
 ### 7.2 待办和已办查询
 
 ```text
-GET /api/tasks?assigneeId=U2001&status=PENDING&page=1&pageSize=20
-GET /api/tasks?assigneeId=U2001&status=APPROVED&page=1&pageSize=20
+GET /api/tasks/todo?assigneeId=U2001
+GET /api/tasks/done?assigneeId=U2001
 ```
 
 查询条件以 `assignee_id + status + created_at` 索引为基础。响应中应包含任务、节点、审批实例摘要和最新快照摘要，避免前端为一条待办发起大量串行请求。
@@ -253,11 +270,11 @@ GET /api/tasks?assigneeId=U2001&status=APPROVED&page=1&pageSize=20
 ### 7.3 标准审批动作
 
 ```text
-POST /api/approvals/{approvalInstanceId}/actions/approve
-POST /api/approvals/{approvalInstanceId}/actions/reject
-POST /api/approvals/{approvalInstanceId}/actions/withdraw
-POST /api/tasks/{taskId}/transfer
-POST /api/tasks/{taskId}/add-sign
+POST /api/approvals/{approvalInstanceId}/withdraw
+POST /api/approvals/{approvalInstanceId}/tasks/{taskId}/approve
+POST /api/approvals/{approvalInstanceId}/tasks/{taskId}/reject
+POST /api/approvals/{approvalInstanceId}/tasks/{taskId}/transfer
+POST /api/approvals/{approvalInstanceId}/tasks/{taskId}/add-sign
 ```
 
 统一动作请求至少包含：
@@ -281,7 +298,7 @@ POST /api/processes/{processCode}/publish
 GET /api/processes?businessType=PURCHASE&status=PUBLISHED
 ```
 
-第一版也可以只使用 SQL 种子数据，但运行时必须通过流程表读取节点和连线。流程发布时应校验：节点连通、审批节点有审批人规则、条件优先级无歧义、同一业务类型只有一个当前生效版本。
+当前代码侧重运行时执行，流程发布接口仍可作为后续能力继续补充。流程配置已经能被运行时读取并驱动串行推进。
 
 ## 8. 审批状态机设计
 

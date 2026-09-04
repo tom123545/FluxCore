@@ -11,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fluxcore.approval.dto.BusinessDataResponse;
 import com.fluxcore.approval.dto.SubmitApprovalRequest;
 import com.fluxcore.approval.dto.SubmitApprovalResponse;
@@ -65,10 +66,14 @@ class ApprovalSubmitServiceTest {
     }
 
     @Test
-    void submit_shouldCreateApprovalRuntimeDataAndMarkBusinessSubmitted() {
+    void submit_shouldCreateApprovalRuntimeDataAndMarkBusinessSubmitted() throws Exception {
+        ObjectNode businessPayload = objectMapper.createObjectNode()
+                .put("totalAmount", 1280.00)
+                .put("remark", "采购审批备注");
+        businessPayload.set("formData", objectMapper.createObjectNode().put("costCenter", "CC-1001"));
         BusinessDataResponse businessData = new BusinessDataResponse(
                 10001L, "APP-TEST-001", "PURCHASE", "PUR-TEST-001", "办公用品采购", "U1001", "DRAFT",
-                objectMapper.createObjectNode().put("totalAmount", 1280.00));
+                businessPayload);
         ApprovalProcessEntity process = new ApprovalProcessEntity();
         process.setId(10L);
         ApprovalNodeEntity firstNode = new ApprovalNodeEntity();
@@ -124,6 +129,10 @@ class ApprovalSubmitServiceTest {
         verify(snapshotMapper).insert(snapshotCaptor.capture());
         assertEquals("SUBMIT", snapshotCaptor.getValue().getSnapshotType());
         assertEquals(64, snapshotCaptor.getValue().getDataHash().length());
+        assertEquals("CC-1001", objectMapper.readTree(snapshotCaptor.getValue().getDataJson())
+                .path("data").path("formData").path("costCenter").asText());
+        assertEquals("采购审批备注", objectMapper.readTree(snapshotCaptor.getValue().getDataJson())
+                .path("data").path("remark").asText());
 
         ArgumentCaptor<ApprovalActionEntity> actionCaptor = ArgumentCaptor.forClass(ApprovalActionEntity.class);
         verify(actionMapper).insert(actionCaptor.capture());

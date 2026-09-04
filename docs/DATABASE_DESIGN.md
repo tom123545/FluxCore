@@ -554,7 +554,7 @@ Redis 分布式锁       防止短时间并发执行
 
 ## 14. 建表和迁移建议
 
-第一版建议使用 Flyway 或版本化 SQL：
+当前本地启动已经接入版本化 SQL：`schema.sql + migration.sql + data.sql`。后续如继续增列、改索引或补表，也应沿用版本化 SQL：
 
 ```text
 V1__create_application_tables.sql
@@ -564,7 +564,7 @@ V4__create_idempotency_and_outbox_tables.sql
 V5__insert_demo_processes.sql
 ```
 
-禁止使用 `ddl-auto: create` 覆盖已有数据。开发阶段可以使用 `update`，交付和测试环境应使用版本化迁移。
+禁止使用 `ddl-auto: create` 覆盖已有数据。开发阶段可以使用 `update`，交付和测试环境应继续使用版本化迁移或明确的手工 SQL 变更。
 
 ## 15. 设计取舍
 

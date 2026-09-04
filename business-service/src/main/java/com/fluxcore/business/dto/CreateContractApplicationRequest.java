@@ -3,6 +3,7 @@ package com.fluxcore.business.dto;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -12,6 +13,7 @@ public class CreateContractApplicationRequest {
     @NotBlank private String contractNo;
     @NotBlank private String changeReason;
     @DecimalMin("0.00") private BigDecimal changeAmount;
+    @Size(max = 1000) private String remark;
     @NotBlank private String currency;
     @NotBlank private String idempotencyKey;
     @Valid private List<ContractChangeItemRequest> items;
@@ -26,6 +28,8 @@ public class CreateContractApplicationRequest {
     public void setChangeReason(String changeReason) { this.changeReason = changeReason; }
     public BigDecimal getChangeAmount() { return changeAmount; }
     public void setChangeAmount(BigDecimal changeAmount) { this.changeAmount = changeAmount; }
+    public String getRemark() { return remark; }
+    public void setRemark(String remark) { this.remark = remark; }
     public String getCurrency() { return currency; }
     public void setCurrency(String currency) { this.currency = currency; }
     public String getIdempotencyKey() { return idempotencyKey; }

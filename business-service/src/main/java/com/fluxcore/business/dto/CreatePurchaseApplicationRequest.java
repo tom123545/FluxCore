@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -13,6 +14,7 @@ public class CreatePurchaseApplicationRequest {
     @NotBlank private String title;
     @NotBlank private String currency;
     @DecimalMin("0.01") private BigDecimal totalAmount;
+    @Size(max = 1000) private String remark;
     @NotBlank private String idempotencyKey;
     @NotEmpty @Valid private List<PurchaseItemRequest> items;
 
@@ -26,6 +28,8 @@ public class CreatePurchaseApplicationRequest {
     public void setCurrency(String currency) { this.currency = currency; }
     public BigDecimal getTotalAmount() { return totalAmount; }
     public void setTotalAmount(BigDecimal totalAmount) { this.totalAmount = totalAmount; }
+    public String getRemark() { return remark; }
+    public void setRemark(String remark) { this.remark = remark; }
     public String getIdempotencyKey() { return idempotencyKey; }
     public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
     public List<PurchaseItemRequest> getItems() { return items; }

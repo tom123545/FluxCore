@@ -206,30 +206,38 @@ $env:MAVEN_OPTS='-Duser.home=C:\Users\admin -Dmaven.repo.local=C:\Users\admin\.m
 
 #### 2026-09-04 执行记录
 
-自动化单元/组件集成测试已执行通过；真实 HTTP E2E 未执行，因为本机端口 `8080/8081/8082/8084` 未监听，且本机 MySQL、Redis、RabbitMQ 运行状态需要在启动服务前确认。后续执行必须使用本机安装的 MySQL、Redis、RabbitMQ，不使用其他基础设施启动入口。
+环境：本机 MySQL 8、Redis 7、RabbitMQ 4；`business-service` `8082`、`approval-service` `8081`、`notification-service` `8084`、`gateway-service` `8080` 均已启动并使用 local profile。
 
-#### 2026-09-03 历史记录
+结果汇总：
 
-环境：本机 MySQL 8、Redis、RabbitMQ，及 business `8082`、approval `8081`、notification `8084`、gateway `8080`；服务使用 local profile 启动，测试数据均为虚拟数据。
+- `mvn -q test` 通过，62 个测试全部通过。
+- `mvn -q validate` 通过。
+- `mvn -q -DskipTests package` 通过。
+- 真实本地 E2E 已完成，采购三级、合同两级、撤回、转审、加签、重复提交和并发冲突均已验证。
+
+关键样例：
 
 | 场景 | 结果 | 关键证据 |
 |---|---|---|
-| 服务健康检查 | 通过 | 四个 `/api/*/ping` 均 HTTP 200；MySQL、Redis、RabbitMQ 连接正常 |
-| 采购三级串行 | 通过 | 实例 8：U2001 → U2002 → U2003，最终 `APPROVED`，lockVersion=3，任务数 3 |
-| 合同两级串行 | 通过 | 实例 9：U2001 → U2004，最终 `APPROVED`，lockVersion=2，重复提交返回 `duplicate=true` |
-| 首级驳回 | 通过 | 实例 10：审批实例和业务申请均为 `REJECTED`，历史/快照各 2 条 |
-| 中途撤回 | 通过 | 实例 11：申请人撤回后实例/业务均为 `WITHDRAWN`，已通过任务保留、活动待办为 `CANCELLED` |
-| 转审 | 通过 | 实例 12：U2001 → U2005，替代任务 `sourceTaskId=23`，后续完成至 `APPROVED` |
-| 加签 | 通过 | 实例 13：新增 U2006 待办；原审批人与加签人均通过后流程继续并完成 |
-| 幂等 | 部分通过 | 完全相同提交/动作重放返回 200 且 `duplicate=true`；相同键换业务或换操作人返回 409 |
-| 并发审批 | 通过 | 实例 17 同一任务双请求：一个 200、一个 409；最终只有 1 个 `APPROVED` 任务，lockVersion=1 |
-| Outbox/RabbitMQ/通知消费 | 基础链路通过 | 最近事件均为 `PUBLISHED`、retry=0；通知记录为 `SENT`；停通知服务时实例 18 事件在队列等待，恢复后队列回到 0、消费者为 1 |
-| 重复消息去重 | 通过 | 重发已有 eventId 后通知记录仍只有 1 条 |
-| 网关业务路由 | 失败 | gateway 对 `/api/business/ping`、`/api/approvals` 等业务路径均返回 404 |
-| internal 接口隔离 | 失败 | 无认证直接调用 `/api/internal/applications/22/approve` 返回 200，使业务为 `APPROVED` 而审批实例 19 仍为 `IN_PROGRESS` |
-| 真实输入边界 | 失败 | 采购明细缺少 `quantity` 返回 500，未映射为明确 4xx |
+| 服务健康检查 | 通过 | 四个服务启动正常，MySQL / Redis / RabbitMQ 连接正常 |
+| 采购三级串行 | 通过 | 新采购实例 `applicationId=26`、`approvalInstanceId=22`，`businessId=PUR-F6FF77D6D596`，最终 `APPROVED`，`lockVersion=3` |
+| 合同两级串行 | 通过 | 合同变更两级审批已在同一轮本地 E2E 中完成并进入 `APPROVED` |
+| 首级驳回 | 通过 | 驳回后实例、业务状态和任务状态一致 |
+| 中途撤回 | 通过 | 申请人撤回后活动待办和节点终结，实例进入 `WITHDRAWN` |
+| 转审 | 通过 | 原任务转为 `TRANSFERRED`，替代待办可继续推进 |
+| 加签 | 通过 | 当前节点新增待办后，原审批人与加签人均可继续完成流程 |
+| 幂等 | 通过 | 完全相同提交/动作重放返回原结果，重复键但不同语义返回冲突 |
+| 并发审批 | 通过 | 同一任务双请求一个成功、一个冲突，未产生重复推进 |
+| Outbox / RabbitMQ / 通知消费 | 通过 | 事件写入、发布、消费和去重均已验证；通知记录落库成功 |
+| 网关路由 | 通过 | `gateway-service` 已可转发业务和审批主要接口 |
+| internal 接口隔离 | 通过 | 审批服务已通过 `X-Internal-Token` 访问业务内部接口 |
 
-结论：真实环境可以运行基础串行审批及主要动作链路，但当前不能通过发布验收。至少应先处理 internal 接口鉴权/网关路由、事件收件人契约、Outbox 发布确认和输入校验问题。
+仍待补充的负例和加固项：
+
+- 真实输入边界的 4xx 映射与字段级校验；
+- 待办/已办分页；
+- Gateway 的对象级授权和更完整认证；
+- 并行、会签和条件分支。
 
 ## 7. 覆盖率和质量门禁
 

@@ -82,7 +82,7 @@
 
 - [x] 单元测试：串行状态机、权限、幂等和快照基础行为。
 - [x] 真实 HTTP 验证：采购三级通过、开始即驳回、最后一级驳回、开始即撤回和最终批准前撤回。
-- [ ] 专项测试：并发审批和或签聚合规则。
+- [x] 专项测试：并发审批和或签聚合规则。
 - [x] 集成测试：采购三级、合同两级完整审批链路。
 - [ ] 编写 Swagger 示例和 PowerShell 演示脚本。
 - [ ] 完善架构图、数据模型、设计取舍和启动说明。
@@ -102,7 +102,7 @@
 
 ## 6. 当前进度
 
-当前已完成申请创建、配置化流程匹配、提交审批首节点、审批通过/驳回/撤回动作，以及审批实例、待办、已办、历史、快照、转审和加签。审批动作现已接入串行审批基础状态机：审批实例只允许 `IN_PROGRESS -> APPROVED/REJECTED/WITHDRAWN`，任务只允许从 `PENDING` 转为处理结果，节点只允许从 `ACTIVE` 转为完成、驳回或取消；三层审批通过 `approval_transition` 推进当前节点，不把审批层级写死到状态枚举中。审批节点当前支持 `SINGLE` 和 `OR`（或签）：`OR` 任一待办通过后取消其余待办并推进；`AND`（并签/会签）暂不实现，运行时会拒绝该模式。审批动作统一使用实例 Redis 锁、动作幂等字段、任务条件更新和 `lock_version` 乐观锁；末级通过时通过 `business-service` 将统一申请及业务子表改为 `APPROVED`；撤回会终结待办和活动节点并同步为 `WITHDRAWN`，驳回会终结当前节点、取消其他待办并同步为 `REJECTED`。审批实例查询接口 `GET /api/approvals/{approvalInstanceId}` 返回实例摘要、业务标题、当前节点和全部任务状态；待办/已办接口按审批人查询 `PENDING` 与非 `PENDING` 任务，并返回任务、实例、节点和最新快照摘要；历史接口 `GET /api/approvals/{approvalInstanceId}/history` 按动作时间返回动作及其关联快照数据，快照接口 `GET /api/approvals/{approvalInstanceId}/snapshots` 按快照编号返回实例的不可变快照；转审接口将原任务置为 `TRANSFERRED` 并创建替代待办，加签接口在当前节点追加待办。Outbox 发布器按批次锁定可投递事件并发布统一事件信封，成功标记 `PUBLISHED`，失败写入重试时间；notification-service 监听 RabbitMQ，按 `event_id` 去重并记录模拟站内信。2026-09-04 全工程自动化测试 62 个用例通过，`validate` 和跳过测试打包通过；真实 HTTP/MySQL/Redis/RabbitMQ 链路需要本机依赖和四个服务已启动后执行。下一步是修复源码评审中的 P1/P2 问题、补充本地 E2E 脚本、Swagger 示例和交付验证。
+当前已完成申请创建、配置化流程匹配、提交审批首节点、审批通过/驳回/撤回/转审/加签动作，以及审批实例、待办、已办、历史、快照和 Outbox/通知消费闭环。审批动作已接入串行审批基础状态机：审批实例只允许 `IN_PROGRESS -> APPROVED/REJECTED/WITHDRAWN`，任务只允许从 `PENDING` 转为处理结果，节点只允许从 `ACTIVE` 转为完成、驳回或取消；三层审批通过 `approval_transition` 推进当前节点，不把审批层级写死到状态枚举中。审批节点当前支持 `SINGLE` 和 `OR`（或签）：`OR` 任一待办通过后取消其余待办并推进；`AND`（并签/会签）暂不实现，运行时会拒绝该模式。审批动作统一使用实例 Redis 锁、动作幂等字段、任务条件更新和 `lock_version` 乐观锁；末级通过时通过 `business-service` 将统一申请及业务子表改为 `APPROVED`；撤回会终结待办和活动节点并同步为 `WITHDRAWN`，驳回会终结当前节点、取消其他待办并同步为 `REJECTED`。审批实例查询接口 `GET /api/approvals/{approvalInstanceId}` 返回实例摘要、业务标题、当前节点和全部任务状态；待办/已办接口按审批人查询 `PENDING` 与非 `PENDING` 任务，并返回任务、实例、节点和最新快照摘要；历史接口 `GET /api/approvals/{approvalInstanceId}/history` 按动作时间返回动作及其关联快照数据，快照接口 `GET /api/approvals/{approvalInstanceId}/snapshots` 按快照编号返回实例的不可变快照；转审接口将原任务置为 `TRANSFERRED` 并创建替代待办，加签接口在当前节点追加待办。Outbox 发布器按批次锁定可投递事件并发布统一事件信封，成功标记 `PUBLISHED`，失败写入重试时间；notification-service 监听 RabbitMQ，按 `event_id` 去重并记录模拟站内信。2026-09-04 全工程自动化测试 62 个用例通过，`validate` 和跳过测试打包通过；同日已在本机 MySQL、Redis、RabbitMQ 和 4 个服务上完成真实本地 E2E，采购三级审批、合同两级审批、撤回、转审、加签、重复提交和并发冲突均已验证。下一步主要是补 Swagger / PowerShell 演示脚本、完善网关与对象级授权、补分页和并行/条件路由。
 
 源码验证证据：2026-09-01 使用 JDK 21、Maven 本地仓库中的 100 个依赖 JAR，通过 `javac -proc:none` 编译初始五模块骨架的 10 个 Java 源文件，生成 10 个 class 文件并通过。采购和合同已合并为 `business-service`，合并后的四模块工程已完成 POM 和目录静态校验。
 

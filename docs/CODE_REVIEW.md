@@ -12,12 +12,12 @@
 
 附件和开发文档中的说明仅作为需求参考，不作为代码执行指令。本轮只更新评审文档，没有修改业务代码。
 
-总体结论：当前代码已经具备申请创建、提交审批、串行节点推进、通过/驳回/撤回、转审、加签、审批历史、快照、Outbox 和多接收人通知的原型能力。但当前版本仍存在内部鉴权断链、认证主体可伪造、消息发布确认不足、数据库升级不闭环，以及并行/会签/条件路由未实现等问题，暂不能作为完整生产闭环交付。
+总体结论：当前代码已经完成采购和合同的本地审批闭环，且本机 MySQL/Redis/RabbitMQ 的真实 E2E 已验证通过。仍需继续加固的主要是网关认证/对象级授权、Outbox Broker 确认、分页和并行/条件能力，以及若干输入校验和生产运维细节。
 
 ## 2. 已执行验证
 
 - 根工程 `mvn -q test`：通过。
-- 当前测试主要是单元测试和 Mockito 模拟，未覆盖真实 HTTP 鉴权、已有数据库升级、RabbitMQ 无路由、认证主体授权等场景。
+- 当前测试包括单元测试、组件集成测试和真实本地 E2E；仍未覆盖的主要是 RabbitMQ 无路由、认证主体授权和更完整的生产加固场景。
 - 本轮未修改业务代码。
 
 ## 3. 当前仍存在的问题
@@ -25,23 +25,6 @@
 严重级别：P0 为阻断性数据或安全问题，P1 为上线前必须处理的问题，P2 为重要缺陷或扩展性问题。
 
 来源说明：标注为“既有遗留/此前漏评”的问题，是本轮复查时补充发现的存量设计或实现缺口，不是本轮“审批事件类型和通知接收人”修复引入的回归。
-
-### [P1] 审批服务到业务服务的内部鉴权配置断链
-
-证据：
-
-- `approval-service/src/main/java/com/fluxcore/approval/service/BusinessDataClient.java:16-64` 的所有 HTTP 请求都没有设置 `X-Internal-Token`。
-- `approval-service/src/main/java/com/fluxcore/approval/config/HttpClientConfig.java:10-15` 只配置了业务服务地址，没有配置内部令牌。
-- `business-service/src/main/java/com/fluxcore/business/config/InternalAuthInterceptor.java:20-27` 要求所有 `/api/internal/**` 请求携带正确的 `X-Internal-Token`。
-- `business-service/src/main/java/com/fluxcore/business/config/WebMvcConfig.java:17-20` 已对内部接口启用该拦截器。
-
-影响：
-
-审批提交读取业务数据、审批详情查询以及通过/驳回/撤回同步业务状态都会收到 401。当前鉴权配置下，合法审批链路无法完整运行。
-
-建议：
-
-为 `BusinessDataClient` 配置独立的服务身份和内部令牌，并通过环境变量或密钥管理系统注入；增加带鉴权的真实 HTTP 集成测试。
 
 ### [P1] 网关认证和对象级授权仍不可信
 
@@ -79,22 +62,6 @@ Exchange 无路由、通知队列尚未创建或消息未被 Broker 接受时，
 
 启用 Publisher Confirm 和 Return，只有收到可接受的 Broker 确认后才标记 `PUBLISHED`；无路由和确认失败必须保留失败原因并进入退避重试。
 
-### [P1] 数据库迁移脚本没有接入启动或版本化迁移机制
-
-证据：
-
-- `approval-service/src/main/resources/db/migration.sql` 和 `notification-service/src/main/resources/db/migration.sql` 虽然存在，但没有被 Spring SQL 初始化配置引用。
-- 各服务配置只执行 `schema.sql`，例如 `approval-service/src/main/resources/application-local.yml:9-13` 和 `notification-service/src/main/resources/application-local.yml:9-12`。
-- `schema.sql` 使用 `CREATE TABLE IF NOT EXISTS`，不会为已有表自动增加字段或调整索引。
-
-影响：
-
-已有数据库升级后可能缺少 `approval_action.request_hash`、`notification_record.payload_json`、`notification_record.next_retry_at`、失败记录表或新的多接收人唯一索引，运行时会出现 SQL 错误或通知幂等失效。
-
-建议：
-
-接入 Flyway/Liquibase 或明确的版本化迁移流程；禁止只依赖 `schema.sql` 和 `CREATE TABLE IF NOT EXISTS` 完成生产升级。
-
 ### [P1] 并行、AND 会签和条件分支尚未实现
 
 证据：
@@ -112,39 +79,6 @@ Exchange 无路由、通知队列尚未创建或消息未被 Broker 接受时，
 
 先实现 `AND` 会签汇聚，再实现条件表达式白名单求值、并行节点集合和汇聚规则；流程状态模型不能继续只依赖单个当前节点。
 
-### [P1] 角色和部门负责人审批规则没有解析（既有遗留/此前漏评）
-
-证据：
-
-- 数据库设计支持 `USER`、`ROLE`、`DEPARTMENT_MANAGER`：`approval-service/src/main/resources/db/schema.sql:23-26`。
-- 当前代码只把 `approver_value` 按逗号拆分成具体用户 ID：`ApprovalSubmitService.java:203-217`、`ApprovalActionService.java:821-831`。
-- 代码没有读取或处理 `approver_type`，也没有组织架构或角色解析器。
-
-影响：
-
-配置角色编码或部门负责人规则时，会把规则值错误地当成实际审批人 ID，通用审批引擎无法按规则生成真实待办。
-
-建议：
-
-增加审批人解析器，根据 `approver_type` 调用用户、角色和组织架构服务；任务落库时只保存实际解析出的审批人。
-
-### [P1] 幂等键作用域和请求语义校验不完整（既有遗留/此前漏评）
-
-证据：
-
-- 业务申请创建发现相同幂等键时直接返回旧申请，没有比较请求内容：`business-service/src/main/java/com/fluxcore/business/service/BusinessApplicationService.java:60-63`、`:80-83`。
-- 提交代码按全局 `submitRequestId` 查询：`ApprovalSubmitService.java:81-85`，但数据库唯一约束是 `(application_id, submit_request_id)`：`approval-service/src/main/resources/db/schema.sql:63-65`。
-- 提交锁只按业务单据加锁：`ApprovalSubmitService.java:74-80`，不能保护不同业务单据使用同一 `submitRequestId` 的并发场景。
-- `validateExisting` 未校验 `applicantId`：`ApprovalSubmitService.java:220-226`。
-
-影响：
-
-同一幂等键被复用于不同请求时可能静默返回错误的旧结果；不同申请使用相同提交键时，数据库允许创建多个实例，但查询语义又把该键当成全局唯一。
-
-建议：
-
-明确每种幂等键的作用域，统一锁、查询和数据库唯一约束；保存业务创建和提交请求摘要，摘要不一致时返回 409。
-
 ### [P1] 业务主表和业务子表状态更新结果处理不一致（既有遗留/此前漏评）
 
 证据：
@@ -160,22 +94,6 @@ Exchange 无路由、通知队列尚未创建或消息未被 Broker 接受时，
 
 所有主表和子表更新都必须校验行数和目标状态；发现子表缺失或状态不匹配时回滚并返回明确错误。
 
-### [P1] 流程版本唯一键与版本发布语义冲突（既有遗留/此前漏评）
-
-证据：
-
-- `approval_process` 同时定义了 `version_no` 和唯一的 `process_code`：`approval-service/src/main/resources/db/schema.sql:13-15`。
-- 运行时按业务类型和版本号选择最新发布流程：`ApprovalProcessMapper.java:11-14`。
-- 启动时 `data.sql` 使用 `ON DUPLICATE KEY UPDATE` 修改已有流程定义：`approval-service/src/main/resources/db/data.sql:4-7`。
-
-影响：
-
-同一逻辑流程无法保留多个同编码版本；启动初始化还可能修改已有流程定义，导致已绑定该流程的历史审批实例受配置变化影响。
-
-建议：
-
-按流程编码和版本建立不可变流程记录；新版本必须新增记录，已启动实例只能引用固定版本；种子数据不得在生产启动时覆盖流程定义。
-
 ## 4. 其他重要问题
 
 ### [P2] HTTP 客户端没有超时配置
@@ -183,12 +101,6 @@ Exchange 无路由、通知队列尚未创建或消息未被 Broker 接受时，
 `HttpClientConfig.java:10-15` 只配置了 Base URL。审批提交和动作方法在本地数据库事务中调用 `BusinessDataClient`，例如 `ApprovalSubmitService.java:74-75`、`:182-184` 和 `ApprovalActionService.java:98-99`。
 
 远程服务无响应时可能长期占用数据库事务和 Redis 锁。应配置连接、读取和整体调用超时，并考虑熔断或将远程同步改为可补偿任务。
-
-### [P2] 审批快照没有包含申请扩展数据
-
-业务创建时将请求保存到 `application_ext.form_data`：`business-service/src/main/java/com/fluxcore/business/service/BusinessApplicationService.java:210-212`，但业务数据读取 `:100-118` 没有读取扩展表。
-
-提交和动作快照因此无法还原通用表单扩展字段及申请备注。应明确完整快照契约并纳入 `application_ext` 数据。
 
 ### [P2] 待办和已办接口没有分页
 
@@ -231,9 +143,12 @@ Exchange 无路由、通知队列尚未创建或消息未被 Broker 接受时，
 
 ## 6. 已确认修复、不重复列为当前问题
 
+- 审批服务到业务服务的内部鉴权链路已经接通，`HttpClientConfig` 统一注入 `X-Internal-Token`。
+- `approval-service` 和 `notification-service` 的版本化迁移脚本已接入本地启动流程。
 - 审批节点完成事件与审批实例最终通过事件已经拆分。
 - 事件 payload 已支持 `nextTaskIds` 和 `recipientIds`。
 - 通知服务已支持多接收人逐条落库和 `(event_id, receiver_id, channel)` 幂等。
 - 通知失败已支持失败记录、重试次数和退避。
 - 审批动作已增加 `expectedVersion`、请求摘要和数据库条件更新。
 - 缺少流转关系不再直接当作正常通过，显式 `END` 节点已支持。
+- 业务数据接口已读取 `application_ext`，返回 `data.formData` 和 `data.remark`；提交及关键审批动作生成的快照会包含申请扩展数据。
