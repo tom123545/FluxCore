@@ -24,6 +24,7 @@ public class ApprovalActionEntity {
     private String operatorId;
     private String actionType;
     private String actionRequestId;
+    private String requestHash;
     private String fromStatus;
     private String toStatus;
     private String comment;

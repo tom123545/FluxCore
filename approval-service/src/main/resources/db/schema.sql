@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS approval_action (
     comment VARCHAR(2000) NULL COMMENT '审批意见或操作说明',
     snapshot_id BIGINT UNSIGNED NULL COMMENT '本动作关联的快照 ID',
     action_request_id VARCHAR(128) NOT NULL COMMENT '审批动作请求幂等键',
+    request_hash CHAR(64) NULL COMMENT '完整动作请求规范化后的 SHA-256 摘要',
     created_at DATETIME(3) NOT NULL COMMENT '动作发生时间',
     UNIQUE KEY uk_action_request (approval_instance_id, action_request_id),
     KEY idx_action_instance_time (approval_instance_id, created_at),

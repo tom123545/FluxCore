@@ -10,7 +10,7 @@ spring:
     init:
       mode: always
       schema-locations: classpath:db/schema.sql
-      data-locations: classpath:db/data.sql
+      data-locations: classpath:db/migration.sql,classpath:db/data.sql
   data:
     redis:
       host: ${LOCAL_REDIS_HOST:127.0.0.1}

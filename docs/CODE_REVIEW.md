@@ -2,203 +2,238 @@
 
 ## 1. 评审范围与结论
 
-本次评审以需求说明书图片作为业务需求输入，以 `docs/ARCHITECTURE.md`、`docs/TECHNICAL_DESIGN.md`、`docs/TECHNICAL_SOLUTION.md`、`docs/MODEL_HANDOFF.md` 和当前工作区代码为对照依据。图片及已有文档中的“后续执行规则”均未被当作需要执行的代码指令。
+本次评审以需求说明书图片作为业务需求输入，并对照以下开发文档和当前工作区代码：
 
-评审只写入本文档，没有修改业务代码。
+- `docs/ARCHITECTURE.md`
+- `docs/TECHNICAL_DESIGN.md`
+- `docs/TECHNICAL_SOLUTION.md`
+- `docs/DATABASE_DESIGN.md`
+- `docs/MODEL_HANDOFF.md`
 
-总体结论：当前代码已经具备采购/合同申请、提交首节点、串行推进、通过/驳回/撤回、待办/历史查询、转审/加签和 Outbox 基础能力，能够作为原型运行；真实环境中的基础串行链路可行，但还不能认定为满足需求的可交付闭环。主要风险集中在事件通知语义、跨服务一致性、幂等与乐观锁、并行/条件流程缺失，以及网关鉴权缺失。
+附件和开发文档中的说明仅作为需求参考，不作为代码执行指令。本轮只更新评审文档，没有修改业务代码。
+
+总体结论：当前代码已经具备申请创建、提交审批、串行节点推进、通过/驳回/撤回、转审、加签、审批历史、快照、Outbox 和多接收人通知的原型能力。但当前版本仍存在内部鉴权断链、认证主体可伪造、消息发布确认不足、数据库升级不闭环，以及并行/会签/条件路由未实现等问题，暂不能作为完整生产闭环交付。
 
 ## 2. 已执行验证
 
-- 根工程 `mvn -q -DskipTests package`：通过，退出码 0。
-- 已生成测试报告的 11 个测试类共 50 个测试：失败 0、错误 0、跳过 0。
-- 真实环境健康检查：MySQL、Redis、RabbitMQ，以及 business `8082`、approval `8081`、notification `8084`、gateway `8080` 均可连接/启动。
-- 真实 HTTP 已通过采购三级串行（实例 8）、合同两级串行（实例 9）、驳回（实例 10）、撤回（实例 11）、转审（实例 12）、加签（实例 13）、幂等重放和并发审批（实例 17）。
-- 真实 MySQL/RabbitMQ 核验显示 Outbox 事件可发布并被消费；停止 notification-service 后，实例 18 的提交事件在队列中等待，服务恢复后队列清空并落库。
-- 真实测试同时确认了通知接收人错误、网关业务路由缺失、未认证 internal 接口可改业务状态，以及缺少数量的采购请求返回 500 等问题；这些问题不是测试环境假象。
+- 根工程 `mvn -q test`：通过。
+- 当前测试主要是单元测试和 Mockito 模拟，未覆盖真实 HTTP 鉴权、已有数据库升级、RabbitMQ 无路由、认证主体授权等场景。
+- 本轮未修改业务代码。
 
-## 3. 问题清单
+## 3. 当前仍存在的问题
 
-严重级别：P0 为阻断性数据/安全问题，P1 为上线前必须处理的问题，P2 为重要缺陷或扩展性问题。
+严重级别：P0 为阻断性数据或安全问题，P1 为上线前必须处理的问题，P2 为重要缺陷或扩展性问题。
 
-### [P1] 审批事件类型和通知接收人不正确，无法覆盖下一节点及多审批人
+来源说明：标注为“既有遗留/此前漏评”的问题，是本轮复查时补充发现的存量设计或实现缺口，不是本轮“审批事件类型和通知接收人”修复引入的回归。
 
-证据：
-
-- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalActionService.java:236-243` 在当前节点完成时统一发送 `APPROVAL_APPROVED`，即使仍然创建了下一节点；因此“节点通过”和“审批实例最终通过”被混用了。
-- 同一段 `ApproveEvent` 只携带当前任务、当前操作人、实例状态、下一节点 ID 和一个 `nextTaskId`，没有下一节点的全部审批人。
-- `notification-service/src/main/java/com/fluxcore/notification/service/ApprovalNotificationService.java:68-76` 依次从事件中取 `receiverId/assigneeId/applicantId/operatorId`。审批通过事件没有前面三个字段时，会把当前操作人当成接收人，而不是下一审批人或申请人。
-- `notification-service/src/main/resources/db/schema.sql:3-12` 对 `event_id` 建唯一约束，一条事件只能落一条通知记录，不能表达多接收人或多渠道。
-
-影响：采购一级通过后可能产生“审批已完成”类事件并通知错误的人；会签/或签或转审场景无法可靠通知所有待办人。
-
-真实证据：实例 17 当前节点已推进到下一节点，U2002 存在待办，但 `approval_outbox_event` 的 `APPROVAL_APPROVED` payload 只有 `operatorId=U2001` 和 `nextTaskId=35`；对应 `notification_record` 的收件人仍为 U2001，而不是下一节点审批人 U2002。
-
-建议：拆分节点完成事件与实例终态事件；统一定义事件接收人列表和通知用途；通知记录唯一键改为事件 + 接收人 + 渠道，或建立事件接收人明细表。
-
-### [P1] Outbox 标记已发布的条件不足，存在消息丢失窗口
+### [P1] 审批服务到业务服务的内部鉴权配置断链
 
 证据：
 
-- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalOutboxPublisher.java:45-60` 在 `RabbitTemplate.convertAndSend` 返回后立即执行 `markPublished`。
-- `approval-service/src/main/java/com/fluxcore/approval/config/RabbitTopologyConfig.java:9-14` 只声明 Exchange；Queue 和 Binding 在 notification-service 中声明，通知服务未启动或队列尚未创建时消息可能不可路由。
-- 当前没有 publisher confirm、mandatory return 或发送后的 broker 确认处理。
+- `approval-service/src/main/java/com/fluxcore/approval/service/BusinessDataClient.java:16-64` 的所有 HTTP 请求都没有设置 `X-Internal-Token`。
+- `approval-service/src/main/java/com/fluxcore/approval/config/HttpClientConfig.java:10-15` 只配置了业务服务地址，没有配置内部令牌。
+- `business-service/src/main/java/com/fluxcore/business/config/InternalAuthInterceptor.java:20-27` 要求所有 `/api/internal/**` 请求携带正确的 `X-Internal-Token`。
+- `business-service/src/main/java/com/fluxcore/business/config/WebMvcConfig.java:17-20` 已对内部接口启用该拦截器。
 
-影响：发送调用没有同步抛错时，事件可能已被 Broker 丢弃，但 Outbox 已被标记为 `PUBLISHED`，后续不会重试；这不满足“通知失败不回滚主流程且可靠重试”的目标。
+影响：
 
-真实证据：停止 notification-service 后提交实例 18，Outbox 很快为 `PUBLISHED`，RabbitMQ 队列随后显示 `messages_ready=1`；本次因队列已预先存在，恢复服务后消息最终消费。该结果验证了已有队列的恢复路径，但没有证明无队列/无路由时 `PUBLISHED` 标记安全，仍保留消息丢失风险。
+审批提交读取业务数据、审批详情查询以及通过/驳回/撤回同步业务状态都会收到 401。当前鉴权配置下，合法审批链路无法完整运行。
 
-建议：启用 publisher confirms 和 returns，只有收到可接受的 Broker 确认后才标记 `PUBLISHED`；同时处理无路由消息，保留失败原因和退避时间。
+建议：
 
-### [P1] 跨服务业务状态没有补偿协议，审批库和业务库可能分叉
+为 `BusinessDataClient` 配置独立的服务身份和内部令牌，并通过环境变量或密钥管理系统注入；增加带鉴权的真实 HTTP 集成测试。
 
-证据：
-
-- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalSubmitService.java:167-178` 先写审批本地数据，再通过 HTTP 调用 `markSubmitted`。
-- `ApprovalActionService.java` 的终态动作同样在本地状态、快照和 Outbox 操作中调用 `markRejected/markApproved/markWithdrawn`，例如 `:518-529`、`:622-633`。
-- `@Transactional` 只覆盖审批服务本地数据库，不能覆盖 business-service 的 HTTP 调用。
-
-影响：远程调用成功而本地事务随后提交失败时，业务单据已经变更但审批实例不存在或状态未落库；远程调用失败时，本地回滚也不能自动处理远程已完成的情况。
-
-建议：为业务状态变更增加带幂等键的补偿任务/对账状态，或通过可靠事件异步更新业务状态；记录“审批状态已完成但业务状态待同步”，由重试器处理，不能只依赖一次 HTTP 调用。
-
-### [P1] `lock_version` 没有覆盖所有审批动作
+### [P1] 网关认证和对象级授权仍不可信
 
 证据：
 
-- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalActionService.java:303-343` 的转审和 `:400-435` 的加签没有调用实例版本条件更新。
-- 通过动作在 `:185-187` 的未完成节点分支也不更新实例版本；该分支会在 `SINGLE` 节点加签后出现。
-- 版本更新 SQL 仅定义在 `approval-service/src/main/java/com/fluxcore/approval/mapper/ApprovalInstanceMapper.java:24-37`。
+- `gateway-service/src/main/java/com/fluxcore/gateway/GatewayAccessInterceptor.java:20-26` 只判断 `Authorization` 是否为空，不校验 Bearer 格式、签名、过期时间或用户主体。
+- `gateway-service/src/main/java/com/fluxcore/gateway/GatewayProxyController.java:47-49` 使用静态 `X-Gateway-Token` 转发请求，服务拦截器配置还带有源码默认值。
+- `approval-service/src/main/java/com/fluxcore/approval/dto/ApprovalActionRequest.java:6-10` 直接接收客户端提供的 `operatorId`。
+- `approval-service/src/main/java/com/fluxcore/approval/dto/SubmitApprovalRequest.java:5-10` 直接接收客户端提供的 `applicantId`。
+- `approval-service/src/main/java/com/fluxcore/approval/controller/ApprovalTaskQueryController.java:20-27` 允许客户端传入任意 `assigneeId`。
+- 审批详情、历史和快照接口只根据 `approvalInstanceId` 查询，没有校验当前用户是否为申请人或相关审批人：`ApprovalController.java:33-35`、`ApprovalHistoryQueryController.java:21-28`。
 
-影响：动作历史已经发生，但审批实例版本不变，客户端无法用版本判断这些动作是否改变了实例；在 Redis 锁失效、重启或多实例竞争时，数据库层缺少完整的最终并发保护。
+影响：
 
-建议：所有改变审批聚合的动作统一使用“读取版本 + 条件更新 + 版本加一”；动作请求携带并校验 `expectedVersion`，版本冲突时不得继续写任务、快照或事件。
+任意非空 `Authorization` 都可能通过网关；客户端还可以伪造审批人、申请人或查询主体，造成越权审批和敏感审批数据泄露。
 
-### [P1] 动作幂等只校验动作类型和操作人，没有校验完整请求
+建议：
 
-证据：
+接入真实认证组件，从认证上下文取得用户主体；服务间令牌必须取消源码默认值；所有审批动作和查询接口增加申请人、审批人或管理员的对象级权限校验。
 
-- `ApprovalActionService.java:105-111`、`:264-271`、`:361-368`、`:452-458`、`:545-552` 对重复 `actionRequestId` 只校验动作类型和 `operatorId`。
-- 没有比较 `taskId`、转审目标、加签目标、备注等请求字段；`ApprovalActionRequest.java:5-8` 也没有文档中建议的 `expectedVersion`。
-
-影响：同一操作人可使用相同请求 ID 请求另一个任务或另一个转审/加签目标，接口仍返回第一次动作结果，调用方无法发现请求语义被复用。
-
-建议：把动作请求规范化后保存请求摘要，重复请求必须校验任务、目标人、版本等关键字段；摘要不同返回 `409 ACTION_REQUEST_ID_REUSED`。
-
-### [P1] 提交幂等键的数据库约束与代码语义不一致
+### [P1] Outbox 发布没有 Broker Confirm/Return
 
 证据：
 
-- `ApprovalSubmitService.java:81-84` 通过 `findBySubmitRequestId` 将 `submitRequestId` 当作全局唯一语义使用。
-- `approval-service/src/main/resources/db/schema.sql:63-65` 实际唯一约束是 `(application_id, submit_request_id)`，不是全局唯一。
-- 提交锁 `ApprovalSubmitService.java:75-76` 只按业务类型和业务单据加锁，不能保护两个不同业务单据之间的相同提交键。
+- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalOutboxPublisher.java:49-57` 调用 `convertAndSend` 返回后立即标记 `PUBLISHED`。
+- `approval-service/src/main/java/com/fluxcore/approval/config/RabbitTopologyConfig.java:9-14` 只声明 Exchange。
+- Queue 和 Binding 由 `notification-service` 声明：`notification-service/src/main/java/com/fluxcore/notification/config/RabbitTopologyConfig.java:19-30`。
+- 当前没有 publisher confirm、mandatory return 或无路由消息处理。
 
-影响：两个不同申请并发使用相同 `submitRequestId` 时，数据库允许创建两个实例；之后全局查询可能返回不确定的其中一条，破坏“相同键复用原结果/冲突”的语义。
+影响：
 
-建议：明确提交键是全局唯一还是申请内唯一，并让锁、查询、数据库唯一索引、错误码保持同一作用域。若按当前代码的全局语义，应增加全局唯一索引或独立的幂等约束方案。
+Exchange 无路由、通知队列尚未创建或消息未被 Broker 接受时，Outbox 仍可能被标记为 `PUBLISHED`，事件随后无法重试。
 
-### [P1] 需求要求的并行和条件分支尚未实现
+建议：
 
-证据：
+启用 Publisher Confirm 和 Return，只有收到可接受的 Broker 确认后才标记 `PUBLISHED`；无路由和确认失败必须保留失败原因并进入退避重试。
 
-- 需求对照文档将流程能力定义为“串行、并行、条件分支”：`docs/TECHNICAL_SOLUTION.md:18-24`。
-- `ApprovalActionService.java:725-731` 只支持 `SINGLE` 和 `OR`，`AND` 会被拒绝。
-- `ApprovalTransitionMapper.java:12-16` 只查询 `condition_json IS NULL` 的默认连线，没有条件求值；运行时以单个 `current_node_id` 推进，不能表达多个 ACTIVE 节点和汇聚判断。
-
-影响：当前不能完成需求建议的合同并行场景，也不能按业务数据选择条件分支；流程表的预留字段尚未形成可用能力。
-
-建议：先补齐 `AND`/会签，再增加条件表达式白名单求值、并行节点实例集合和汇聚规则；状态机和实例查询不能继续假设只有一个当前节点。
-
-### [P1] 缺少流转关系时会被当成正常结束，且显式 END 节点当前不可用
+### [P1] 数据库迁移脚本没有接入启动或版本化迁移机制
 
 证据：
 
-- `ApprovalActionService.java:144-149` 在找不到默认流转时把 `nextNode` 置为 `null`，没有区分“当前节点确实是末节点”和“流程配置缺少连线”。
-- `ApprovalActionService.java:211-220` 因此会直接把审批实例改为 `APPROVED`。
-- 同时 `:147-148` 拒绝 `nodeType != APPROVAL` 的下一节点，因此数据库设计中预留的 `END` 节点无法作为显式终点使用。
+- `approval-service/src/main/resources/db/migration.sql` 和 `notification-service/src/main/resources/db/migration.sql` 虽然存在，但没有被 Spring SQL 初始化配置引用。
+- 各服务配置只执行 `schema.sql`，例如 `approval-service/src/main/resources/application-local.yml:9-13` 和 `notification-service/src/main/resources/application-local.yml:9-12`。
+- `schema.sql` 使用 `CREATE TABLE IF NOT EXISTS`，不会为已有表自动增加字段或调整索引。
 
-影响：流程配置遗漏一条 transition 时，审批可能跳过后续节点直接通过；配置采用设计文档中的 `APPROVAL -> END` 形式时，又会被报为下一节点不可执行。
+影响：
 
-建议：流程发布/加载时校验图结构；只有到达合法 END 节点才结束实例，缺少连线应返回配置错误，不能默认为审批通过。
+已有数据库升级后可能缺少 `approval_action.request_hash`、`notification_record.payload_json`、`notification_record.next_retry_at`、失败记录表或新的多接收人唯一索引，运行时会出现 SQL 错误或通知幂等失效。
 
-### [P1] 网关路由和鉴权仍是骨架，内部接口可被直接调用
+建议：
 
-证据：
+接入 Flyway/Liquibase 或明确的版本化迁移流程；禁止只依赖 `schema.sql` 和 `CREATE TABLE IF NOT EXISTS` 完成生产升级。
 
-- `gateway-service/src/main/java/com/fluxcore/gateway/GatewayHealthController.java:7-12` 只有 ping 接口，没有业务路由和认证过滤器。
-- `business-service/src/main/java/com/fluxcore/business/controller/InternalApplicationController.java:9-35` 直接暴露提交、驳回、通过、撤回等内部状态变更接口。
-- 审批动作从请求体信任 `operatorId`，例如 `ApprovalActionRequest.java:5-8`；当前没有从认证主体获取操作人并进行权限校验的实现。
-
-影响：绕过网关即可直接修改业务申请状态，或伪造审批人执行动作。该问题在真实部署中属于越权和数据完整性风险。
-
-真实证据：网关对 `/api/business/ping`、`/api/approvals` 等业务路径均返回 404，说明当前没有业务路由；对刚提交的申请直接无认证调用 `POST /api/internal/applications/22/approve` 返回 200，并使业务状态变为 `APPROVED`，但对应审批实例 19 仍为 `IN_PROGRESS`。
-
-建议：内部接口只允许服务间身份访问；网关完成路由、认证和统一错误处理；审批人、申请人从可信认证上下文取得，不能由客户端自由声明。
-
-### [P1] 通知失败没有独立的失败记录和退避机制
+### [P1] 并行、AND 会签和条件分支尚未实现
 
 证据：
 
-- `ApprovalEventListener.java:15-18` 直接调用通知服务。
-- `ApprovalNotificationService.java:49-52` 对异常重新抛出；`notification-service/src/main/resources/application.yml:8-12` 配置为自动确认并默认重新入队。
-- `NotificationRecordMapper` 虽定义了 `markFailed`，但当前通知服务没有调用它，也没有基于 `retry_count` 的调度重试。
+- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalSubmitService.java:203-217` 只允许 `SINGLE` 和 `OR`。
+- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalActionService.java:812-831` 同样拒绝 `AND`。
+- `approval-service/src/main/java/com/fluxcore/approval/mapper/ApprovalTransitionMapper.java:12-16` 只查询 `condition_json IS NULL` 的默认连线。
+- `approval-service/src/main/java/com/fluxcore/approval/mapper/ApprovalInstanceMapper.java:32-37` 和 `ApprovalNodeInstanceMapper.java:11-12` 按单个 `current_node_id`、单个活动节点推进，不能表达多个并行活动节点。
 
-影响：格式错误或永久失败的消息会被无限重新投递，没有可观测的失败状态和退避，可能持续占用消费者并掩盖后续消息。
+影响：
 
-建议：区分可重试/不可重试异常；落库 `FAILED`、次数和下次重试时间，采用独立重试任务或死信队列；消息处理成功后再确认。
+无法覆盖需求中的会签、合同并行审批和基于业务数据的条件路由；数据库中预留的条件和并行字段尚未形成可用运行能力。
 
-### [P2] 审批快照没有包含申请扩展数据，不符合“完整业务数据快照”
+建议：
 
-证据：
+先实现 `AND` 会签汇聚，再实现条件表达式白名单求值、并行节点集合和汇聚规则；流程状态模型不能继续只依赖单个当前节点。
 
-- `BusinessApplicationService.java:210-212` 将请求保存到 `application_ext.form_data`。
-- `BusinessApplicationService.java:103-116` 组装业务数据时没有读取 `ApplicationExtMapper`，返回的 `BusinessDataResponse` 只包含主表和采购/合同字段。
-- 提交和动作快照直接序列化该响应，例如 `ApprovalSubmitService.java:141-150` 和 `ApprovalActionService.java:172-181`。
-
-影响：申请备注和通用表单扩展字段不会出现在审批历史快照中，后续无法还原审批人实际看到的完整申请。
-
-建议：内部业务数据接口明确快照契约，包含 `application_ext.form_data/remark`；按版本测试快照内容和哈希稳定性。
-
-### [P2] 待办/已办接口没有分页，查询会随数据量线性膨胀
+### [P1] 角色和部门负责人审批规则没有解析（既有遗留/此前漏评）
 
 证据：
 
-- `ApprovalTaskQueryController.java:20-28` 只接收 `assigneeId`。
-- `ApprovalTaskMapper.java:13-54` 返回指定审批人的全部待办或全部非待办记录，没有 `LIMIT/OFFSET` 或分页对象。
-- 设计文档已经给出了 `page/pageSize` 形式的接口建议：`docs/TECHNICAL_SOLUTION.md:244-251`。
+- 数据库设计支持 `USER`、`ROLE`、`DEPARTMENT_MANAGER`：`approval-service/src/main/resources/db/schema.sql:23-26`。
+- 当前代码只把 `approver_value` 按逗号拆分成具体用户 ID：`ApprovalSubmitService.java:203-217`、`ApprovalActionService.java:821-831`。
+- 代码没有读取或处理 `approver_type`，也没有组织架构或角色解析器。
 
-影响：待办中心数据增长后会产生大结果集、长事务和较高数据库负载。
+影响：
 
-建议：增加页码/游标分页、最大页大小和总数/下一页信息；为已办查询补充按时间/状态的索引策略。
+配置角色编码或部门负责人规则时，会把规则值错误地当成实际审批人 ID，通用审批引擎无法按规则生成真实待办。
 
-### [P2] 审批实例详情依赖实时业务服务，没有使用本地快照兜底
+建议：
 
-证据：
+增加审批人解析器，根据 `approver_type` 调用用户、角色和组织架构服务；任务落库时只保存实际解析出的审批人。
 
-- `approval-service/src/main/java/com/fluxcore/approval/service/ApprovalInstanceQueryService.java:42-56` 每次查询实例详情都调用 business-service，并使用实时返回的标题。
-- 该响应没有返回最新快照编号、类型和摘要，且 business-service 不可用时，即使审批本地数据完整，详情也无法正常返回。
-
-影响：历史/终态审批的展示结果可能受当前业务数据变化影响；跨服务故障会降低审批查询可用性。
-
-建议：实例详情的审批事实和标题优先读取本地快照；如需展示实时业务信息，应明确标识为实时字段并允许降级。
-
-### [P2] 申请输入校验不完整，部分非法请求会变成 500 或数据库错误
+### [P1] 幂等键作用域和请求语义校验不完整（既有遗留/此前漏评）
 
 证据：
 
-- `CreatePurchaseApplicationRequest.java:15-17`、`CreateContractApplicationRequest.java:14-17` 对金额使用 `@DecimalMin` 但没有 `@NotNull`。
-- `BusinessApplicationService.java:72-75` 对采购明细直接调用 `quantity.multiply(unitPrice)`；金额为空时会触发运行时异常。
-- 当前没有校验采购明细金额之和与 `totalAmount` 一致，也没有统一校验币种格式和金额小数位。
+- 业务申请创建发现相同幂等键时直接返回旧申请，没有比较请求内容：`business-service/src/main/java/com/fluxcore/business/service/BusinessApplicationService.java:60-63`、`:80-83`。
+- 提交代码按全局 `submitRequestId` 查询：`ApprovalSubmitService.java:81-85`，但数据库唯一约束是 `(application_id, submit_request_id)`：`approval-service/src/main/resources/db/schema.sql:63-65`。
+- 提交锁只按业务单据加锁：`ApprovalSubmitService.java:74-80`，不能保护不同业务单据使用同一 `submitRequestId` 的并发场景。
+- `validateExisting` 未校验 `applicantId`：`ApprovalSubmitService.java:220-226`。
 
-建议：增加非空、精度、范围和跨字段业务校验，并将参数错误映射为明确的 4xx 错误，不让其落成 500。
+影响：
 
-真实证据：采购创建请求省略明细 `quantity` 时返回 HTTP 500，验证了金额/数量非空校验缺失会暴露为服务器错误。
+同一幂等键被复用于不同请求时可能静默返回错误的旧结果；不同申请使用相同提交键时，数据库允许创建多个实例，但查询语义又把该键当成全局唯一。
 
-## 4. 交付前建议验收顺序
+建议：
 
-1. 先修事件类型/接收人契约、Outbox confirm、通知失败重试和内部接口鉴权。
-2. 统一提交/动作幂等作用域，补齐 `expectedVersion` 和所有动作的 `lock_version` 更新。
-3. 增加业务状态补偿与对账，验证远程调用成功/失败、本地提交失败等故障组合。
-4. 实现并行、条件和会签汇聚，再进行采购串行与合同并行端到端验收。
-5. 用真实 MySQL、Redis、RabbitMQ 做双请求并发、锁过期、Broker 不可用、无消费者和重复投递测试。
-6. 最后补分页、完整快照字段、输入校验、Swagger 示例和干净环境启动验证。
+明确每种幂等键的作用域，统一锁、查询和数据库唯一约束；保存业务创建和提交请求摘要，摘要不一致时返回 409。
+
+### [P1] 业务主表和业务子表状态更新结果处理不一致（既有遗留/此前漏评）
+
+证据：
+
+- `markApproved` 调用采购/合同子表更新后忽略返回行数：`business-service/src/main/java/com/fluxcore/business/service/BusinessApplicationService.java:180-194`。
+- `markRejected` 在子表更新失败但子表存在时可能继续返回成功：`:166-176`。
+
+影响：
+
+主申请可能已经变为 `APPROVED` 或 `REJECTED`，但采购/合同子表仍是旧状态或不允许的终态，形成业务数据内部不一致。
+
+建议：
+
+所有主表和子表更新都必须校验行数和目标状态；发现子表缺失或状态不匹配时回滚并返回明确错误。
+
+### [P1] 流程版本唯一键与版本发布语义冲突（既有遗留/此前漏评）
+
+证据：
+
+- `approval_process` 同时定义了 `version_no` 和唯一的 `process_code`：`approval-service/src/main/resources/db/schema.sql:13-15`。
+- 运行时按业务类型和版本号选择最新发布流程：`ApprovalProcessMapper.java:11-14`。
+- 启动时 `data.sql` 使用 `ON DUPLICATE KEY UPDATE` 修改已有流程定义：`approval-service/src/main/resources/db/data.sql:4-7`。
+
+影响：
+
+同一逻辑流程无法保留多个同编码版本；启动初始化还可能修改已有流程定义，导致已绑定该流程的历史审批实例受配置变化影响。
+
+建议：
+
+按流程编码和版本建立不可变流程记录；新版本必须新增记录，已启动实例只能引用固定版本；种子数据不得在生产启动时覆盖流程定义。
+
+## 4. 其他重要问题
+
+### [P2] HTTP 客户端没有超时配置
+
+`HttpClientConfig.java:10-15` 只配置了 Base URL。审批提交和动作方法在本地数据库事务中调用 `BusinessDataClient`，例如 `ApprovalSubmitService.java:74-75`、`:182-184` 和 `ApprovalActionService.java:98-99`。
+
+远程服务无响应时可能长期占用数据库事务和 Redis 锁。应配置连接、读取和整体调用超时，并考虑熔断或将远程同步改为可补偿任务。
+
+### [P2] 审批快照没有包含申请扩展数据
+
+业务创建时将请求保存到 `application_ext.form_data`：`business-service/src/main/java/com/fluxcore/business/service/BusinessApplicationService.java:210-212`，但业务数据读取 `:100-118` 没有读取扩展表。
+
+提交和动作快照因此无法还原通用表单扩展字段及申请备注。应明确完整快照契约并纳入 `application_ext` 数据。
+
+### [P2] 待办和已办接口没有分页
+
+`ApprovalTaskQueryController.java:20-27` 只接收审批人，`ApprovalTaskMapper.java:14-54` 查询指定审批人的全部记录，没有分页参数、最大页大小或游标。
+
+数据量增长后会产生大结果集和较高数据库负载。应增加分页或游标查询。
+
+### [P2] 审批实例详情依赖实时业务服务，没有本地快照降级
+
+`ApprovalInstanceQueryService.java:42-56` 每次查询详情都调用 business-service 获取标题。
+
+业务服务不可用或业务数据发生变化时，审批详情可能失败或展示实时数据，而不是审批时的历史数据。应优先使用本地快照，实时字段需要明确标识并允许降级。
+
+### [P2] 业务输入校验不完整
+
+- `CreatePurchaseApplicationRequest.java:15` 和 `CreateContractApplicationRequest.java:14` 的金额字段缺少 `@NotNull`。
+- `PurchaseItemRequest.java:9-10` 的数量和单价缺少 `@NotNull`。
+- `BusinessApplicationService.java:72-75` 直接执行 `quantity.multiply(unitPrice)`，空值会变成 500。
+- 未校验采购明细金额之和是否等于总金额，也未限制金额精度、币种格式和字符串长度。
+
+应补充字段级和跨字段业务校验，并统一返回 4xx 参数错误。
+
+### [P2] 提交动作在多审批人场景下错误关联单个任务
+
+提交时可以创建多个首节点任务：`ApprovalSubmitService.java:131-142`，但提交动作历史只保存第一个任务 ID：`:157-169`。
+
+这会让提交历史看起来只分配给某一个审批人。提交动作不应随意绑定单个任务，或应建立明确的任务分配记录。
+
+### [P2] Redis 锁没有续租机制
+
+`RedisLockService.java:20-29` 只使用固定租期，审批动作和提交流程使用 30 秒租约。
+
+当数据库或远程 HTTP 调用超过租期时，其他请求可能重新获得 Redis 锁。虽然当前实例版本条件更新可以拦截部分并发，但锁本身仍存在失效窗口，应增加续租或使用具备自动续期能力的锁实现。
+
+## 5. 本期明确接受的风险
+
+跨服务业务状态更新仍不是分布式事务。当前实现保证业务服务明确返回失败时，审批服务本地事务回滚，但不覆盖“远程调用已经成功、审批服务随后本地提交失败”以及网络超时导致的结果不明确场景。
+
+这是本期因开发周期接受的范围限制，不作为本轮阻断项；发布说明中应明确记录，后续可通过幂等补偿任务、对账状态或可靠事件进一步完善。
+
+## 6. 已确认修复、不重复列为当前问题
+
+- 审批节点完成事件与审批实例最终通过事件已经拆分。
+- 事件 payload 已支持 `nextTaskIds` 和 `recipientIds`。
+- 通知服务已支持多接收人逐条落库和 `(event_id, receiver_id, channel)` 幂等。
+- 通知失败已支持失败记录、重试次数和退避。
+- 审批动作已增加 `expectedVersion`、请求摘要和数据库条件更新。
+- 缺少流转关系不再直接当作正常通过，显式 `END` 节点已支持。

@@ -10,7 +10,11 @@ public class HttpClientConfig {
     @Bean
     RestClient businessRestClient(
             RestClient.Builder builder,
-            @Value("${business.service.url:http://localhost:8082}") String businessServiceUrl) {
-        return builder.baseUrl(businessServiceUrl).build();
+            @Value("${business.service.url:http://localhost:8082}") String businessServiceUrl,
+            @Value("${fluxcore.internal.token:fluxcore-internal-dev-token}") String internalToken) {
+        return builder
+                .baseUrl(businessServiceUrl)
+                .defaultHeader("X-Internal-Token", internalToken)
+                .build();
     }
 }

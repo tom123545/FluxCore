@@ -30,6 +30,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -102,10 +103,10 @@ public class ApprovalActionService {
             throw new ApprovalActionException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
         }
         try {
+            String requestHash = ApprovalActionRequestFingerprint.approve(taskId, request);
             ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId, request.actionRequestId());
             if (existingAction != null) {
-                if (!"APPROVE".equals(existingAction.getActionType())
-                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                if (!requestHash.equals(existingAction.getRequestHash())) {
                     throw new ApprovalActionException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
                 }
                 return toResponse(approvalInstanceId, existingAction, true);
@@ -115,6 +116,7 @@ public class ApprovalActionService {
             if (instance == null) {
                 throw new ApprovalActionException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
             }
+            long lockVersion = ensureExpectedVersion(instance, request.expectedVersion());
             ApprovalTaskEntity task = taskMapper.selectById(taskId);
             if (task == null || !Long.valueOf(approvalInstanceId).equals(task.getApprovalInstanceId())) {
                 throw new ApprovalActionException("TASK_NOT_FOUND", "审批待办不存在: " + taskId, HttpStatus.NOT_FOUND);
@@ -141,29 +143,72 @@ public class ApprovalActionService {
             resolveApprovers(currentNode);
             ensureTaskTransition(task.getStatus(), "APPROVED");
 
+            // A missing route is only a configuration error once this approval node
+            // is actually completing. Before that point, other pending tasks may
+            // still determine the route later.
+            boolean nodeCompleted = "OR".equals(approvalMode)
+                    || taskMapper.countPendingByNodeInstanceId(activeNode.getId()) <= 1;
             ApprovalTransitionEntity transition = transitionMapper.findDefaultNext(
                     instance.getProcessId(), instance.getCurrentNodeId()).orElse(null);
             ApprovalNodeEntity nextNode = transition == null ? null : nodeMapper.selectById(transition.getToNodeId());
-            if (transition != null && (nextNode == null || !"APPROVAL".equals(nextNode.getNodeType()))) {
+            if (nodeCompleted && transition == null) {
+                throw new ApprovalActionException("NEXT_NODE_NOT_CONFIGURED",
+                        "审批节点完成后未配置下一节点流转", HttpStatus.UNPROCESSABLE_ENTITY);
+            }
+            if (transition != null && (nextNode == null
+                    || !Long.valueOf(instance.getProcessId()).equals(nextNode.getProcessId())
+                    || !("APPROVAL".equals(nextNode.getNodeType()) || "END".equals(nextNode.getNodeType())))) {
                 throw new ApprovalActionException("NEXT_NODE_INVALID", "审批流转的下一节点不可执行", HttpStatus.UNPROCESSABLE_ENTITY);
             }
-            if (nextNode != null && (nextNode.getApproverValue() == null || nextNode.getApproverValue().isBlank())) {
-                throw new ApprovalActionException("APPROVER_NOT_CONFIGURED", "下一审批节点未配置审批人", HttpStatus.UNPROCESSABLE_ENTITY);
+            if (nodeCompleted && nextNode != null && "APPROVAL".equals(nextNode.getNodeType())
+                    && (nextNode.getApproverValue() == null || nextNode.getApproverValue().isBlank())) {
+                throw new ApprovalActionException("APPROVER_NOT_CONFIGURED",
+                        "下一审批节点未配置审批人", HttpStatus.UNPROCESSABLE_ENTITY);
             }
             BusinessDataResponse businessData = businessDataClient.get(instance.getBusinessType(), instance.getBusinessId());
             if (businessData == null || !instance.getApplicationId().equals(businessData.applicationId())) {
                 throw new ApprovalActionException("BUSINESS_DATA_NOT_FOUND", "审批对应的业务数据不存在或已变更", HttpStatus.NOT_FOUND);
             }
+
+            // Determine the aggregate transition before changing any task state, then reserve the
+            // expected instance version before writing tasks, nodes, snapshots, or events.
+            if (nodeCompleted) {
+                ensureNodeTransition(activeNode.getStatus(), "COMPLETED");
+            }
+            List<String> nextApprovers = nodeCompleted && nextNode != null
+                    && "APPROVAL".equals(nextNode.getNodeType())
+                    ? resolveApprovers(nextNode) : List.of();
+            List<Long> nextTaskIds = new ArrayList<>();
+            boolean reachesEnd = nodeCompleted && nextNode != null && "END".equals(nextNode.getNodeType());
+            String toStatus = reachesEnd ? "APPROVED" : IN_PROGRESS;
+            if ("APPROVED".equals(toStatus)) {
+                ensureInstanceTransition(instance.getStatus(), toStatus);
+                if (instanceMapper.updateStatusWithVersion(approvalInstanceId, IN_PROGRESS, toStatus,
+                        lockVersion) != 1) {
+                    throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
+                }
+                instance.setStatus(toStatus);
+                instance.setCurrentNodeId(null);
+                businessDataClient.markApproved(instance.getApplicationId());
+            } else if (nodeCompleted && nextNode != null && "APPROVAL".equals(nextNode.getNodeType())) {
+                if (instanceMapper.updateCurrentNodeWithVersion(approvalInstanceId, nextNode.getId(),
+                        lockVersion) != 1) {
+                    throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
+                }
+                instance.setCurrentNodeId(nextNode.getId());
+            } else if (instanceMapper.touchWithVersion(approvalInstanceId,
+                    lockVersion) != 1) {
+                throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
+            }
+            incrementLockVersion(instance);
+
             if (taskMapper.updatePendingToApproved(taskId, approvalInstanceId, request.operatorId(), request.comment()) != 1) {
                 throw new ApprovalActionException("TASK_STATE_CHANGED", "待办状态已发生变化，请重试", HttpStatus.CONFLICT);
             }
             if ("OR".equals(approvalMode)) {
                 taskMapper.cancelOtherPendingByNodeInstanceId(activeNode.getId(), taskId);
             }
-            boolean nodeCompleted = "OR".equals(approvalMode)
-                    || taskMapper.countPendingByNodeInstanceId(activeNode.getId()) == 0;
             if (nodeCompleted) {
-                ensureNodeTransition(activeNode.getStatus(), "COMPLETED");
                 if (nodeInstanceMapper.markCompleted(activeNode.getId(), approvalInstanceId) != 1) {
                     throw new ApprovalActionException("ACTIVE_NODE_CHANGED", "审批节点状态已发生变化，请重试", HttpStatus.CONFLICT);
                 }
@@ -182,11 +227,7 @@ public class ApprovalActionService {
             snapshot.setCreatedBy(request.operatorId());
             snapshotMapper.insert(snapshot);
 
-            Long nextTaskId = null;
-            String toStatus = IN_PROGRESS;
-            if (!nodeCompleted) {
-                toStatus = IN_PROGRESS;
-            } else if (nextNode != null) {
+            if (nodeCompleted && nextNode != null && "APPROVAL".equals(nextNode.getNodeType())) {
                 ApprovalNodeInstanceEntity nextNodeInstance = new ApprovalNodeInstanceEntity();
                 nextNodeInstance.setApprovalInstanceId(approvalInstanceId);
                 nextNodeInstance.setNodeId(nextNode.getId());
@@ -194,7 +235,6 @@ public class ApprovalActionService {
                 nextNodeInstance.setStartedAt(LocalDateTime.now());
                 nodeInstanceMapper.insert(nextNodeInstance);
 
-                List<String> nextApprovers = resolveApprovers(nextNode);
                 for (String approver : nextApprovers) {
                     ApprovalTaskEntity nextTask = new ApprovalTaskEntity();
                     nextTask.setApprovalInstanceId(approvalInstanceId);
@@ -202,22 +242,8 @@ public class ApprovalActionService {
                     nextTask.setAssigneeId(approver);
                     nextTask.setStatus("PENDING");
                     taskMapper.insert(nextTask);
-                    if (nextTaskId == null) nextTaskId = nextTask.getId();
+                    nextTaskIds.add(nextTask.getId());
                 }
-                if (instanceMapper.updateCurrentNodeWithVersion(approvalInstanceId, nextNode.getId(), currentLockVersion(instance)) != 1) {
-                    throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
-                }
-                instance.setCurrentNodeId(nextNode.getId());
-            } else {
-                toStatus = "APPROVED";
-                ensureInstanceTransition(instance.getStatus(), toStatus);
-                if (instanceMapper.updateStatusWithVersion(approvalInstanceId, IN_PROGRESS, toStatus,
-                        currentLockVersion(instance)) != 1) {
-                    throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
-                }
-                instance.setStatus(toStatus);
-                instance.setCurrentNodeId(null);
-                businessDataClient.markApproved(instance.getApplicationId());
             }
 
             ApprovalActionEntity action = new ApprovalActionEntity();
@@ -227,6 +253,7 @@ public class ApprovalActionService {
             action.setOperatorId(request.operatorId());
             action.setActionType("APPROVE");
             action.setActionRequestId(request.actionRequestId());
+            action.setRequestHash(requestHash);
             action.setFromStatus(IN_PROGRESS);
             action.setToStatus(toStatus);
             action.setComment(request.comment());
@@ -237,10 +264,26 @@ public class ApprovalActionService {
             outbox.setEventId(UUID.randomUUID().toString());
             outbox.setAggregateType("APPROVAL_INSTANCE");
             outbox.setAggregateId(String.valueOf(approvalInstanceId));
-            outbox.setEventType(nodeCompleted ? "APPROVAL_APPROVED" : "APPROVAL_TASK_APPROVED");
+            String eventType;
+            String notificationPurpose;
+            List<String> recipientIds;
+            if (!nodeCompleted) {
+                eventType = "APPROVAL_TASK_APPROVED";
+                notificationPurpose = "TASK_PROCESSED";
+                recipientIds = List.of();
+            } else if (nextNode != null && "APPROVAL".equals(nextNode.getNodeType())) {
+                eventType = "APPROVAL_NODE_APPROVED";
+                notificationPurpose = "TODO_ASSIGNED";
+                recipientIds = nextApprovers;
+            } else {
+                eventType = "APPROVAL_APPROVED";
+                notificationPurpose = "APPROVAL_COMPLETED";
+                recipientIds = recipients(instance.getApplicantId());
+            }
+            outbox.setEventType(eventType);
             outbox.setPayloadJson(writeJson(new ApproveEvent(approvalInstanceId, instance.getApprovalNo(),
                     instance.getBusinessType(), instance.getBusinessId(), taskId, request.operatorId(), toStatus,
-                    instance.getCurrentNodeId(), nextTaskId)));
+                    instance.getCurrentNodeId(), nextTaskIds, notificationPurpose, recipientIds)));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
             outboxMapper.insert(outbox);
@@ -261,11 +304,11 @@ public class ApprovalActionService {
             throw new ApprovalActionException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
         }
         try {
+            String requestHash = ApprovalActionRequestFingerprint.transfer(taskId, request);
             ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId,
                     request.actionRequestId());
             if (existingAction != null) {
-                if (!"TRANSFER".equals(existingAction.getActionType())
-                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                if (!requestHash.equals(existingAction.getRequestHash())) {
                     throw new ApprovalActionException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
                 }
                 return toResponse(approvalInstanceId, existingAction, true);
@@ -275,6 +318,7 @@ public class ApprovalActionService {
             if (instance == null) {
                 throw new ApprovalActionException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
             }
+            long lockVersion = ensureExpectedVersion(instance, request.expectedVersion());
             if (!stateMachine.isInstanceActionable(instance.getStatus())) {
                 throw new ApprovalActionException("APPROVAL_NOT_IN_PROGRESS", "只有进行中的审批可以转审", HttpStatus.CONFLICT);
             }
@@ -301,6 +345,10 @@ public class ApprovalActionService {
             BusinessDataResponse businessData = requireBusinessData(instance);
 
             ensureTaskTransition(task.getStatus(), "TRANSFERRED");
+            if (instanceMapper.touchWithVersion(approvalInstanceId, lockVersion) != 1) {
+                throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
+            }
+            incrementLockVersion(instance);
             if (taskMapper.transferPendingTask(taskId, approvalInstanceId, request.operatorId(), request.comment()) != 1) {
                 throw new ApprovalActionException("TASK_STATE_CHANGED", "待办状态已发生变化，请重试", HttpStatus.CONFLICT);
             }
@@ -324,6 +372,7 @@ public class ApprovalActionService {
             action.setOperatorId(request.operatorId());
             action.setActionType("TRANSFER");
             action.setActionRequestId(request.actionRequestId());
+            action.setRequestHash(requestHash);
             action.setFromStatus(IN_PROGRESS);
             action.setToStatus(IN_PROGRESS);
             action.setComment(request.comment());
@@ -337,7 +386,7 @@ public class ApprovalActionService {
             outbox.setEventType("APPROVAL_TASK_TRANSFERRED");
             outbox.setPayloadJson(writeJson(new TransferEvent(approvalInstanceId, instance.getApprovalNo(),
                     instance.getBusinessType(), instance.getBusinessId(), taskId, replacementTask.getId(),
-                    request.operatorId(), targetAssigneeId, targetAssigneeId)));
+                    request.operatorId(), targetAssigneeId, "TODO_ASSIGNED", recipients(targetAssigneeId))));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
             outboxMapper.insert(outbox);
@@ -358,11 +407,11 @@ public class ApprovalActionService {
             throw new ApprovalActionException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
         }
         try {
+            String requestHash = ApprovalActionRequestFingerprint.addSign(taskId, request);
             ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId,
                     request.actionRequestId());
             if (existingAction != null) {
-                if (!"ADD_SIGN".equals(existingAction.getActionType())
-                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                if (!requestHash.equals(existingAction.getRequestHash())) {
                     throw new ApprovalActionException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
                 }
                 return toResponse(approvalInstanceId, existingAction, true);
@@ -372,6 +421,7 @@ public class ApprovalActionService {
             if (instance == null) {
                 throw new ApprovalActionException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
             }
+            long lockVersion = ensureExpectedVersion(instance, request.expectedVersion());
             if (!stateMachine.isInstanceActionable(instance.getStatus())) {
                 throw new ApprovalActionException("APPROVAL_NOT_IN_PROGRESS", "只有进行中的审批可以加签", HttpStatus.CONFLICT);
             }
@@ -397,6 +447,10 @@ public class ApprovalActionService {
             }
             BusinessDataResponse businessData = requireBusinessData(instance);
 
+            if (instanceMapper.touchWithVersion(approvalInstanceId, lockVersion) != 1) {
+                throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请稍后重试", HttpStatus.CONFLICT);
+            }
+            incrementLockVersion(instance);
             ApprovalTaskEntity addedTask = new ApprovalTaskEntity();
             addedTask.setApprovalInstanceId(approvalInstanceId);
             addedTask.setNodeInstanceId(activeNode.getId());
@@ -416,6 +470,7 @@ public class ApprovalActionService {
             action.setOperatorId(request.operatorId());
             action.setActionType("ADD_SIGN");
             action.setActionRequestId(request.actionRequestId());
+            action.setRequestHash(requestHash);
             action.setFromStatus(IN_PROGRESS);
             action.setToStatus(IN_PROGRESS);
             action.setComment(request.comment());
@@ -429,7 +484,7 @@ public class ApprovalActionService {
             outbox.setEventType("APPROVAL_TASK_ADD_SIGNED");
             outbox.setPayloadJson(writeJson(new AddSignEvent(approvalInstanceId, instance.getApprovalNo(),
                     instance.getBusinessType(), instance.getBusinessId(), taskId, addedTask.getId(),
-                    request.operatorId(), additionalAssigneeId, additionalAssigneeId)));
+                    request.operatorId(), additionalAssigneeId, "TODO_ASSIGNED", recipients(additionalAssigneeId))));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
             outboxMapper.insert(outbox);
@@ -449,10 +504,10 @@ public class ApprovalActionService {
             throw new ApprovalSubmitException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
         }
         try {
+            String requestHash = ApprovalActionRequestFingerprint.withdraw(request);
             ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId, request.actionRequestId());
             if (existingAction != null) {
-                if (!WITHDRAW.equals(existingAction.getActionType())
-                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                if (!requestHash.equals(existingAction.getRequestHash())) {
                     throw new ApprovalSubmitException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
                 }
                 return toResponse(approvalInstanceId, existingAction, true);
@@ -462,6 +517,7 @@ public class ApprovalActionService {
             if (instance == null) {
                 throw new ApprovalSubmitException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
             }
+            long lockVersion = ensureExpectedSubmitVersion(instance, request.expectedVersion());
             if (!request.operatorId().equals(instance.getApplicantId())) {
                 throw new ApprovalSubmitException("WITHDRAW_OPERATOR_FORBIDDEN", "只有申请人可以撤回审批", HttpStatus.FORBIDDEN);
             }
@@ -479,6 +535,11 @@ public class ApprovalActionService {
             BusinessDataResponse businessData = businessDataClient.get(instance.getBusinessType(), instance.getBusinessId());
             String snapshotJson = writeJson(businessData);
 
+            if (instanceMapper.updateStatusWithVersion(approvalInstanceId, IN_PROGRESS, WITHDRAWN, lockVersion) != 1) {
+                throw new ApprovalSubmitException("APPROVAL_STATE_CHANGED", "审批状态已发生变化，请重试", HttpStatus.CONFLICT);
+            }
+            incrementLockVersion(instance);
+
             int cancelledTasks = taskMapper.cancelPendingByInstanceId(approvalInstanceId);
             if (cancelledTasks < 1) {
                 throw new ApprovalSubmitException("PENDING_TASK_NOT_FOUND", "审批实例没有可撤回的待办", HttpStatus.CONFLICT);
@@ -486,11 +547,6 @@ public class ApprovalActionService {
             if (nodeInstanceMapper.markCancelled(activeNode.getId()) != 1) {
                 throw new ApprovalSubmitException("ACTIVE_NODE_CHANGED", "审批节点状态已发生变化，请重试", HttpStatus.CONFLICT);
             }
-            if (instanceMapper.updateStatusWithVersion(approvalInstanceId, IN_PROGRESS, WITHDRAWN,
-                    currentLockVersion(instance)) != 1) {
-                throw new ApprovalSubmitException("APPROVAL_STATE_CHANGED", "审批状态已发生变化，请重试", HttpStatus.CONFLICT);
-            }
-
             ApprovalSnapshotEntity snapshot = new ApprovalSnapshotEntity();
             snapshot.setApprovalInstanceId(approvalInstanceId);
             snapshot.setNodeInstanceId(activeNode.getId());
@@ -509,6 +565,7 @@ public class ApprovalActionService {
             action.setOperatorId(request.operatorId());
             action.setActionType(WITHDRAW);
             action.setActionRequestId(request.actionRequestId());
+            action.setRequestHash(requestHash);
             action.setFromStatus(IN_PROGRESS);
             action.setToStatus(WITHDRAWN);
             action.setComment(request.comment());
@@ -521,7 +578,8 @@ public class ApprovalActionService {
             outbox.setAggregateId(String.valueOf(approvalInstanceId));
             outbox.setEventType("APPROVAL_WITHDRAWN");
             outbox.setPayloadJson(writeJson(new WithdrawEvent(approvalInstanceId, instance.getApprovalNo(),
-                    instance.getBusinessType(), instance.getBusinessId(), request.operatorId())));
+                    instance.getBusinessType(), instance.getBusinessId(), request.operatorId(),
+                    "APPROVAL_WITHDRAWN", recipients(instance.getApplicantId()))));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
             outboxMapper.insert(outbox);
@@ -542,11 +600,11 @@ public class ApprovalActionService {
             throw new ApprovalSubmitException("ACTION_IN_PROGRESS", "该审批实例正在处理中，请稍后重试", HttpStatus.CONFLICT);
         }
         try {
+            String requestHash = ApprovalActionRequestFingerprint.reject(taskId, request);
             ApprovalActionEntity existingAction = actionMapper.selectByActionRequestId(approvalInstanceId,
                     request.actionRequestId());
             if (existingAction != null) {
-                if (!REJECT.equals(existingAction.getActionType())
-                        || !request.operatorId().equals(existingAction.getOperatorId())) {
+                if (!requestHash.equals(existingAction.getRequestHash())) {
                     throw new ApprovalSubmitException("ACTION_REQUEST_ID_REUSED", "actionRequestId 已用于其他审批动作", HttpStatus.CONFLICT);
                 }
                 return toResponse(approvalInstanceId, existingAction, true);
@@ -556,6 +614,7 @@ public class ApprovalActionService {
             if (instance == null) {
                 throw new ApprovalSubmitException("APPROVAL_NOT_FOUND", "审批实例不存在: " + approvalInstanceId, HttpStatus.NOT_FOUND);
             }
+            long lockVersion = ensureExpectedSubmitVersion(instance, request.expectedVersion());
             if (!stateMachine.isInstanceActionable(instance.getStatus())) {
                 throw new ApprovalSubmitException("APPROVAL_NOT_IN_PROGRESS", "只有进行中的审批可以驳回", HttpStatus.CONFLICT);
             }
@@ -582,6 +641,11 @@ public class ApprovalActionService {
             BusinessDataResponse businessData = businessDataClient.get(instance.getBusinessType(), instance.getBusinessId());
             String snapshotJson = writeJson(businessData);
 
+            if (instanceMapper.updateStatusWithVersion(approvalInstanceId, IN_PROGRESS, REJECTED, lockVersion) != 1) {
+                throw new ApprovalSubmitException("APPROVAL_STATE_CHANGED", "审批状态已发生变化，请重试", HttpStatus.CONFLICT);
+            }
+            incrementLockVersion(instance);
+
             if (taskMapper.updatePendingToRejected(taskId, approvalInstanceId, request.comment()) != 1) {
                 throw new ApprovalSubmitException("TASK_STATE_CHANGED", "待办状态已发生变化，请重试", HttpStatus.CONFLICT);
             }
@@ -589,11 +653,6 @@ public class ApprovalActionService {
                 throw new ApprovalSubmitException("ACTIVE_NODE_CHANGED", "审批节点状态已发生变化，请重试", HttpStatus.CONFLICT);
             }
             taskMapper.cancelOtherPendingByInstanceId(approvalInstanceId, taskId);
-            if (instanceMapper.updateStatusWithVersion(approvalInstanceId, IN_PROGRESS, REJECTED,
-                    currentLockVersion(instance)) != 1) {
-                throw new ApprovalSubmitException("APPROVAL_STATE_CHANGED", "审批状态已发生变化，请重试", HttpStatus.CONFLICT);
-            }
-
             ApprovalSnapshotEntity snapshot = new ApprovalSnapshotEntity();
             snapshot.setApprovalInstanceId(approvalInstanceId);
             snapshot.setNodeInstanceId(activeNode.getId());
@@ -613,6 +672,7 @@ public class ApprovalActionService {
             action.setOperatorId(request.operatorId());
             action.setActionType(REJECT);
             action.setActionRequestId(request.actionRequestId());
+            action.setRequestHash(requestHash);
             action.setFromStatus(IN_PROGRESS);
             action.setToStatus(REJECTED);
             action.setComment(request.comment());
@@ -625,7 +685,8 @@ public class ApprovalActionService {
             outbox.setAggregateId(String.valueOf(approvalInstanceId));
             outbox.setEventType("APPROVAL_REJECTED");
             outbox.setPayloadJson(writeJson(new RejectEvent(approvalInstanceId, instance.getApprovalNo(),
-                    instance.getBusinessType(), instance.getBusinessId(), taskId, request.operatorId(), request.comment())));
+                    instance.getBusinessType(), instance.getBusinessId(), taskId, request.operatorId(), request.comment(),
+                    "APPROVAL_REJECTED", recipients(instance.getApplicantId()))));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
             outboxMapper.insert(outbox);
@@ -701,6 +762,32 @@ public class ApprovalActionService {
         return instance.getLockVersion() == null ? 0L : instance.getLockVersion();
     }
 
+    private long ensureExpectedVersion(ApprovalInstanceEntity instance, Long expectedVersion) {
+        if (expectedVersion == null) {
+            throw new ApprovalActionException("EXPECTED_VERSION_REQUIRED", "expectedVersion 不能为空", HttpStatus.BAD_REQUEST);
+        }
+        long currentVersion = currentLockVersion(instance);
+        if (expectedVersion.longValue() != currentVersion) {
+            throw new ApprovalActionException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请刷新后重试", HttpStatus.CONFLICT);
+        }
+        return currentVersion;
+    }
+
+    private long ensureExpectedSubmitVersion(ApprovalInstanceEntity instance, Long expectedVersion) {
+        if (expectedVersion == null) {
+            throw new ApprovalSubmitException("EXPECTED_VERSION_REQUIRED", "expectedVersion 不能为空", HttpStatus.BAD_REQUEST);
+        }
+        long currentVersion = currentLockVersion(instance);
+        if (expectedVersion.longValue() != currentVersion) {
+            throw new ApprovalSubmitException("APPROVAL_VERSION_CONFLICT", "审批实例版本已变化，请刷新后重试", HttpStatus.CONFLICT);
+        }
+        return currentVersion;
+    }
+
+    private void incrementLockVersion(ApprovalInstanceEntity instance) {
+        instance.setLockVersion(currentLockVersion(instance) + 1L);
+    }
+
     private void ensureInstanceTransition(String from, String to) {
         if (!stateMachine.canTransitionInstance(from, to)) {
             throw new ApprovalActionException("INVALID_INSTANCE_TRANSITION",
@@ -761,6 +848,14 @@ public class ApprovalActionService {
         }
     }
 
+    private List<String> recipients(String... values) {
+        return java.util.Arrays.stream(values)
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
     private String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -771,25 +866,30 @@ public class ApprovalActionService {
     }
 
     private record WithdrawEvent(Long approvalInstanceId, String approvalNo, String businessType,
-                                 String businessId, String operatorId) {
+                                 String businessId, String operatorId, String notificationPurpose,
+                                 List<String> recipientIds) {
     }
 
     private record ApproveEvent(Long approvalInstanceId, String approvalNo, String businessType,
                                 String businessId, Long taskId, String operatorId, String status,
-                                Long currentNodeId, Long nextTaskId) {
+                                Long currentNodeId, List<Long> nextTaskIds, String notificationPurpose,
+                                List<String> recipientIds) {
     }
 
     private record RejectEvent(Long approvalInstanceId, String approvalNo, String businessType,
-                               String businessId, Long taskId, String operatorId, String comment) {
+                               String businessId, Long taskId, String operatorId, String comment,
+                               String notificationPurpose, List<String> recipientIds) {
     }
 
     private record TransferEvent(Long approvalInstanceId, String approvalNo, String businessType,
                                  String businessId, Long sourceTaskId, Long replacementTaskId,
-                                 String operatorId, String targetAssigneeId, String receiverId) {
+                                 String operatorId, String targetAssigneeId, String notificationPurpose,
+                                 List<String> recipientIds) {
     }
 
     private record AddSignEvent(Long approvalInstanceId, String approvalNo, String businessType,
                                 String businessId, Long sourceTaskId, Long addedTaskId,
-                                String operatorId, String additionalAssigneeId, String receiverId) {
+                                String operatorId, String additionalAssigneeId, String notificationPurpose,
+                                List<String> recipientIds) {
     }
 }

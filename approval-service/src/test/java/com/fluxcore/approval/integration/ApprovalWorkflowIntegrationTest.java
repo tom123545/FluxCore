@@ -152,7 +152,8 @@ class ApprovalWorkflowIntegrationTest {
 
         ApprovalActionResponse withdrawn = scenario.actionService.withdraw(
                 submitted.approvalInstanceId(),
-                new ApprovalActionRequest("U1004", "WITHDRAW-CCHG-1", "暂缓办理"));
+                new ApprovalActionRequest("U1004", "WITHDRAW-CCHG-1",
+                        scenario.instance().getLockVersion(), "暂缓办理"));
 
         assertEquals("WITHDRAWN", withdrawn.status());
         assertEquals("WITHDRAWN", scenario.instance().getStatus());
@@ -170,7 +171,8 @@ class ApprovalWorkflowIntegrationTest {
         ApprovalTaskEntity task = scenario.pendingTask(operatorId);
         assertNotNull(task, "未找到审批人 " + operatorId + " 的待办");
         return scenario.actionService.approve(approvalId, task.getId(),
-                new ApprovalActionRequest(operatorId, requestId, "同意"));
+                new ApprovalActionRequest(operatorId, requestId,
+                        scenario.instance().getLockVersion(), "同意"));
     }
 
     private static final class Scenario {
@@ -239,6 +241,14 @@ class ApprovalWorkflowIntegrationTest {
                         if (value == null || !"IN_PROGRESS".equals(value.getStatus())
                                 || value.getLockVersion() != version) return 0;
                         value.setCurrentNodeId(invocation.getArgument(1, Long.class));
+                        return 1;
+                    });
+            when(instanceMapper.touchWithVersion(anyLong(), anyLong()))
+                    .thenAnswer(invocation -> {
+                        ApprovalInstanceEntity value = instanceStore.get(invocation.getArgument(0, Long.class));
+                        long version = invocation.getArgument(1, Long.class);
+                        if (value == null || !"IN_PROGRESS".equals(value.getStatus())
+                                || value.getLockVersion() != version) return 0;
                         value.setLockVersion(version + 1);
                         return 1;
                     });
@@ -251,7 +261,6 @@ class ApprovalWorkflowIntegrationTest {
                         value.setStatus(invocation.getArgument(2, String.class));
                         value.setCurrentNodeId(null);
                         value.setCompletedAt(LocalDateTime.now());
-                        value.setLockVersion(version + 1);
                         return 1;
                     });
 
@@ -403,6 +412,20 @@ class ApprovalWorkflowIntegrationTest {
                     transitionStore.put(processId + "/" + (100L + i), transition);
                 }
             }
+            long endNodeId = 101L + approvers.size();
+            ApprovalNodeEntity endNode = new ApprovalNodeEntity();
+            endNode.setId(endNodeId);
+            endNode.setProcessId(processId);
+            endNode.setNodeType("END");
+            endNode.setNodeName("结束");
+            nodeStore.put(endNodeId, endNode);
+
+            ApprovalTransitionEntity endTransition = new ApprovalTransitionEntity();
+            endTransition.setProcessId(processId);
+            endTransition.setFromNodeId(100L + approvers.size());
+            endTransition.setToNodeId(endNodeId);
+            transitionStore.put(processId + "/" + (100L + approvers.size()), endTransition);
+
             when(processMapper.findPublished(businessType)).thenReturn(Optional.of(process));
             when(processMapper.findFirstApprovalNode(processId)).thenReturn(Optional.of(configuredNodes.getFirst()));
             BusinessDataResponse data = new BusinessDataResponse(applicationId, "APP-" + applicationId,

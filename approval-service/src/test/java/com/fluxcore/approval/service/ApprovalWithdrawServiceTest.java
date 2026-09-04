@@ -94,6 +94,7 @@ class ApprovalWithdrawServiceTest {
         assertEquals("WITHDRAW", response.actionType());
         assertEquals(50002L, response.actionId());
         assertFalse(response.duplicate());
+        assertEquals(1L, instance.getLockVersion());
         verify(taskMapper).cancelPendingByInstanceId(INSTANCE_ID);
         verify(nodeInstanceMapper).markCancelled(activeNode.getId());
         verify(instanceMapper).updateStatusWithVersion(INSTANCE_ID, "IN_PROGRESS", "WITHDRAWN", 0L);
@@ -113,6 +114,7 @@ class ApprovalWithdrawServiceTest {
         action.setActionType("WITHDRAW");
         action.setOperatorId("U1001");
         action.setToStatus("WITHDRAWN");
+        action.setRequestHash(ApprovalActionRequestFingerprint.withdraw(REQUEST));
         when(actionMapper.selectByActionRequestId(INSTANCE_ID, REQUEST.actionRequestId())).thenReturn(action);
         when(instanceMapper.selectById(INSTANCE_ID)).thenReturn(instance());
 

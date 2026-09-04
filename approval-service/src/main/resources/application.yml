@@ -18,6 +18,8 @@ management:
       exposure:
         include: health,info
 fluxcore:
+  internal:
+    token: ${FLUXCORE_INTERNAL_TOKEN:fluxcore-internal-dev-token}
   messaging:
     approval:
       exchange: ${APPROVAL_EVENT_EXCHANGE:fluxcore.approval.events}

@@ -20,7 +20,9 @@ public class NotificationRecordEntity {
     private String channel;
     private String status;
     private Integer retryCount;
+    private String payloadJson;
     private String errorMessage;
+    private LocalDateTime nextRetryAt;
     private LocalDateTime sentAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

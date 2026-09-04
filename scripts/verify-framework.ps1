@@ -10,7 +10,4 @@ mvn -version
 Write-Host 'Validating Maven project...' -ForegroundColor Cyan
 mvn -q validate
 
-Write-Host 'Checking Docker Compose configuration...' -ForegroundColor Cyan
-docker compose config --quiet
-
 Write-Host 'Framework validation passed.' -ForegroundColor Green

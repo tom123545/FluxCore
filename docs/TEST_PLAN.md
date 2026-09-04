@@ -22,9 +22,9 @@
 |---|---|---|---|
 | 单元测试 | 验证状态机、Service 分支、边界输入、权限、幂等和异常 | Mockito | 已补充并通过 |
 | 流程组件集成测试 | 真实组合提交服务、动作服务和状态机，验证完整业务状态变化 | 状态化测试适配器 | 已补充并通过 |
-| 环境 E2E/验收测试 | 验证真实 HTTP、MySQL、Redis、RabbitMQ 和多服务边界 | 本机基础设施和四个服务 | 已执行，存在阻断问题 |
+| 环境 E2E/验收测试 | 验证真实 HTTP、MySQL、Redis、RabbitMQ 和多服务边界 | 本机基础设施和四个服务 | 需本机依赖启动后执行 |
 
-组件集成测试不是对真实 SQL、事务隔离或消息 Broker 的替代。真实环境测试已作为发布前门禁执行，结果见第 6.4 节。
+组件集成测试不是对真实 SQL、事务隔离或消息 Broker 的替代。真实环境测试作为发布前门禁执行，结果需记录到第 6.4 节。
 
 ## 3. 已实现测试清单
 
@@ -34,6 +34,7 @@
 
 | 测试类 | 用例数 | 覆盖内容 |
 |---|---:|---|
+| `approval-service/src/test/java/com/fluxcore/approval/config/HttpClientConfigTest.java` | 1 | 业务客户端内部 token 自动注入 |
 | `approval-service/src/test/java/com/fluxcore/approval/service/ApprovalBoundaryTest.java` | 8 | 业务数据为空、非草稿、业务标识不匹配、审批人未配置、实例不存在、操作人越权、转审/加签目标非法 |
 | `approval-service/src/test/java/com/fluxcore/approval/state/ApprovalStateMachineTest.java` | +1 | null、空白、未知状态和大小写/空白规范化 |
 | `notification-service/src/test/java/com/fluxcore/notification/service/ApprovalNotificationServiceTest.java` | +2 | 事件缺少接收人、事件缺少 eventId |
@@ -172,7 +173,7 @@ $env:MAVEN_OPTS='-Duser.home=C:\Users\admin -Dmaven.repo.local=C:\Users\admin\.m
 & 'D:\IntelliJ IDEA 2025.3.2\plugins\maven\lib\maven3\bin\mvn.cmd' -q -pl approval-service,notification-service test
 ```
 
-本轮结果：50 个测试通过，失败 0，错误 0，跳过 0；根工程跳过测试打包通过。
+2026-09-04 执行结果：62 个测试通过，失败 0，错误 0，跳过 0；根工程 `validate` 和跳过测试打包通过。
 
 ### 6.2 真实环境 E2E 前置条件
 
@@ -180,7 +181,7 @@ $env:MAVEN_OPTS='-Duser.home=C:\Users\admin -Dmaven.repo.local=C:\Users\admin\.m
 
 - MySQL 8，数据库 `fluxcore`；
 - Redis 7；
-- RabbitMQ 4，用户密码按 `docker-compose.yml` 配置；
+- RabbitMQ 4，用户密码按本机安装配置；
 - business-service `8082`；
 - approval-service `8081`；
 - notification-service `8084`；
@@ -201,7 +202,13 @@ $env:MAVEN_OPTS='-Duser.home=C:\Users\admin -Dmaven.repo.local=C:\Users\admin\.m
 9. 停止 notification-service，完成审批动作，确认审批成功且 Outbox 未丢失；恢复通知服务后确认事件最终消费。
 10. 检查无权限用户、伪造 operatorId、直接访问 internal API 和绕过 Gateway 的结果。
 
-### 6.4 本轮真实环境执行结果（2026-09-03）
+### 6.4 真实环境执行结果
+
+#### 2026-09-04 执行记录
+
+自动化单元/组件集成测试已执行通过；真实 HTTP E2E 未执行，因为本机端口 `8080/8081/8082/8084` 未监听，且本机 MySQL、Redis、RabbitMQ 运行状态需要在启动服务前确认。后续执行必须使用本机安装的 MySQL、Redis、RabbitMQ，不使用其他基础设施启动入口。
+
+#### 2026-09-03 历史记录
 
 环境：本机 MySQL 8、Redis、RabbitMQ，及 business `8082`、approval `8081`、notification `8084`、gateway `8080`；服务使用 local profile 启动，测试数据均为虚拟数据。
 
@@ -236,7 +243,7 @@ $env:MAVEN_OPTS='-Duser.home=C:\Users\admin -Dmaven.repo.local=C:\Users\admin\.m
 
 ## 8. 当前限制和后续补充
 
-本轮组件集成测试为了保证在没有可用 Docker 运行态的环境中可重复执行，使用状态化 Mapper 和业务客户端测试适配器；它不能发现真实 MySQL SQL、事务隔离、Redis TTL、RabbitMQ 路由和网络超时问题。真实环境测试已执行，但尚未覆盖 Broker 完全不可用、Redis 租约过期和干净数据库重建。
+本轮组件集成测试为了保证在没有本机中间件运行态的环境中可重复执行，使用状态化 Mapper 和业务客户端测试适配器；它不能发现真实 MySQL SQL、事务隔离、Redis TTL、RabbitMQ 路由和网络超时问题。真实环境测试需要在本机 MySQL、Redis、RabbitMQ 启动后继续执行，并且尚未覆盖 Broker 完全不可用、Redis 租约过期和干净数据库重建。
 
 以下项目仍需真实环境或后续功能完成后补测：
 

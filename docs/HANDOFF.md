@@ -13,7 +13,7 @@
 - 工程是 Maven 多模块 Spring Boot 项目。
 - 已有四个应用服务目录和启动类：`gateway-service`、`approval-service`、`business-service`、`notification-service`；申请创建和提交审批首节点代码已经实现。
 - 架构原则已确认：只有一个通用 `approval-service` 审批引擎；采购和合同统一放在 `business-service` 中作为不同业务模块，不得各自复制审批引擎。新增审批流程只增加数据库配置/节点规则，必要时增加业务适配器，不新增服务。
-- 默认运行配置使用本机 MySQL 8、Redis 7、RabbitMQ 4，并通过各模块的 `application-local.yml` 连接 `127.0.0.1`；Docker Compose 仅作为可选基础设施方案，容器化时显式启用 `docker` profile。
+- 默认运行配置使用本机 MySQL 8、Redis 7、RabbitMQ 4，并通过各模块的 `application-local.yml` 连接 `127.0.0.1`。
 - 用户明确要求使用 Redis 分布式锁防止重复请求执行。
 - 幂等方案已确认：不创建独立幂等记录表，直接在 `application`、`approval_instance`、`approval_action` 中保存幂等字段，并使用唯一索引。
 - 不要引入 RocketMQ，继续使用 RabbitMQ。
@@ -34,11 +34,8 @@
 ```powershell
 mvn -q validate
 mvn -DskipTests package
-docker compose up -d
 ```
 
-如果 Maven 仍不可用，先检查 PATH，不要改换技术栈。构建通过后，按 `docs/MODEL_HANDOFF.md` 和 `docs/IMPLEMENTATION_PLAN.md` 中最早的未完成任务继续：实现审批通过、驳回、撤回和待办查询，并让 PURCHASE、CONTRACT 共用同一套状态机和 API；业务数据统一由 `business-service` 提供。
-
-如果 `docker compose up -d` 无法拉取镜像，先检查 Docker Desktop 的 Internet/Proxy 设置；不要修改服务编排或替换中间件。
+如果 Maven 仍不可用，先检查 PATH，不要改换技术栈。构建通过后，确认本机 MySQL、Redis、RabbitMQ 已启动，再按 `docs/MODEL_HANDOFF.md` 和 `docs/IMPLEMENTATION_PLAN.md` 中最早的未完成任务继续；业务数据统一由 `business-service` 提供。
 
 每次工作结束时更新实施计划中的复选框、当前进度和验收记录。

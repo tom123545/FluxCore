@@ -26,6 +26,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -128,6 +129,7 @@ public class ApprovalSubmitService {
             nodeInstanceMapper.insert(nodeInstance);
 
             ApprovalTaskEntity task = null;
+            List<Long> taskIds = new ArrayList<>();
             for (String approver : firstApprovers) {
                 ApprovalTaskEntity candidate = new ApprovalTaskEntity();
                 candidate.setApprovalInstanceId(instance.getId());
@@ -135,6 +137,7 @@ public class ApprovalSubmitService {
                 candidate.setAssigneeId(approver);
                 candidate.setStatus("PENDING");
                 taskMapper.insert(candidate);
+                taskIds.add(candidate.getId());
                 if (task == null) task = candidate;
             }
 
@@ -169,7 +172,8 @@ public class ApprovalSubmitService {
             outbox.setAggregateType("APPROVAL_INSTANCE");
             outbox.setAggregateId(String.valueOf(instance.getId()));
             outbox.setEventType("APPROVAL_SUBMITTED");
-            outbox.setPayloadJson(writeJson(new SubmitEvent(instance.getId(), instance.getApprovalNo(), request.businessType(), request.businessId(), task.getId(), firstNode.getApproverValue())));
+            outbox.setPayloadJson(writeJson(new SubmitEvent(instance.getId(), instance.getApprovalNo(),
+                    request.businessType(), request.businessId(), taskIds, "TODO_ASSIGNED", firstApprovers)));
             outbox.setStatus("NEW");
             outbox.setRetryCount(0);
             outboxMapper.insert(outbox);
@@ -237,5 +241,6 @@ public class ApprovalSubmitService {
     }
 
     private String shortUuid() { return UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(); }
-    private record SubmitEvent(Long approvalInstanceId, String approvalNo, String businessType, String businessId, Long taskId, String assigneeId) {}
+    private record SubmitEvent(Long approvalInstanceId, String approvalNo, String businessType, String businessId,
+                               List<Long> taskIds, String notificationPurpose, List<String> recipientIds) {}
 }

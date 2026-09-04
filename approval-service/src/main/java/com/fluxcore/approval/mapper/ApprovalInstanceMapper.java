@@ -36,6 +36,11 @@ public interface ApprovalInstanceMapper extends BaseMapper<ApprovalInstanceEntit
                                      @Param("currentNodeId") long currentNodeId,
                                      @Param("lockVersion") long lockVersion);
 
+    @Update("UPDATE approval_instance SET lock_version=lock_version + 1, updated_at=NOW(3) "
+            + "WHERE id=#{approvalInstanceId} AND status='IN_PROGRESS' AND lock_version=#{lockVersion}")
+    int touchWithVersion(@Param("approvalInstanceId") long approvalInstanceId,
+                         @Param("lockVersion") long lockVersion);
+
     default Optional<ApprovalInstanceEntity> findByApplicationId(long id) {
         return Optional.ofNullable(selectByApplicationId(id));
     }

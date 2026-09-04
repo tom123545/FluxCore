@@ -133,6 +133,8 @@ class ApprovalSubmitServiceTest {
         ArgumentCaptor<ApprovalOutboxEventEntity> outboxCaptor = ArgumentCaptor.forClass(ApprovalOutboxEventEntity.class);
         verify(outboxMapper).insert(outboxCaptor.capture());
         assertEquals("APPROVAL_SUBMITTED", outboxCaptor.getValue().getEventType());
+        assertTrue(outboxCaptor.getValue().getPayloadJson()
+                .contains("\"recipientIds\":[\"U2001\"]"));
         verify(businessDataClient).markSubmitted(10001L);
         verify(redisLockService).unlock("approval:submit:PURCHASE:PUR-TEST-001", "test-lock-token");
     }

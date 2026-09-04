@@ -257,11 +257,12 @@ UNIQUE INDEX uk_instance_submit_request (submit_request_id)
 | `operator_id` | `VARCHAR(64)` | NOT NULL | 实际操作人 ID |
 | `action_type` | `VARCHAR(32)` | NOT NULL | `SUBMIT`、`APPROVE`、`REJECT`、`WITHDRAW`、`TRANSFER`、`ADD_SIGN` |
 | `action_request_id` | `VARCHAR(128)` | NOT NULL | 本次审批动作请求的幂等键 |
+| `request_hash` | `CHAR(64)` | NULL | 完整动作请求规范化后的 SHA-256 摘要 |
 | `comment` | `VARCHAR(2000)` | NULL | 审批意见或操作说明 |
 | `created_at` | `DATETIME(3)` | NOT NULL | 动作发生时间 |
 | `updated_at` | `DATETIME(3)` | NOT NULL | 最后更新时间；历史动作通常不再更新 |
 
-约束：`UNIQUE(approval_instance_id, action_request_id)`。同一个审批实例中，相同动作请求重复到达时直接返回第一次处理结果。
+约束：`UNIQUE(approval_instance_id, action_request_id)`。同一个审批实例中，只有完整请求摘要一致时才返回第一次处理结果；摘要不一致返回 `409 ACTION_REQUEST_ID_REUSED`。
 
 ### 5.5 `approval_snapshot`：审批数据快照表
 

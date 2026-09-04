@@ -314,6 +314,7 @@ KEY idx_task_instance (approval_instance_id, status)
 | `comment` | VARCHAR(2000) | NULL | 审批意见 |
 | `snapshot_id` | BIGINT UNSIGNED | NULL | 本动作产生的快照 ID |
 | `action_request_id` | VARCHAR(128) | NOT NULL | 审批动作请求幂等键，不同动作请求必须唯一 |
+| `request_hash` | CHAR(64) | NULL | 完整动作请求规范化后的 SHA-256 摘要 |
 | `created_at` | DATETIME(3) | NOT NULL | 动作发生时间 |
 
 约束：`UNIQUE(approval_instance_id, action_request_id)`。
@@ -371,8 +372,11 @@ KEY idx_task_instance (approval_instance_id, status)
 1. 先获取 Redis 锁，减少同一请求并发执行；
 2. 查询对应业务表或审批运行表中的幂等字段；
 3. 如果请求已成功，直接返回已有资源；
-4. 如果请求参数与同一个幂等键不一致，返回 `409 Conflict`；
+4. 如果规范化后的请求摘要与同一个幂等键不一致，返回 `409 Conflict`；
 5. Redis 锁失效时，由数据库唯一索引阻止重复数据写入。
+
+动作摘要包含动作类型、操作人、任务 ID、`expectedVersion`、转审/加签目标和审批意见。
+历史记录缺少摘要时不能证明请求完全相同，按请求键复用冲突处理。
 
 这种方案字段少、链路直观，适合当前面试项目；代价是不同类型请求的幂等处理逻辑分布在各自表和服务中。未来如果需要统一保存任意接口的原始响应，再考虑独立幂等表。
 

@@ -34,7 +34,7 @@
 
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
-| 多模块工程和基础设施 | 已完成 | 四个 Spring Boot 服务、MySQL、Redis、RabbitMQ Compose 已建立 |
+| 多模块工程和基础设施 | 已完成 | 四个 Spring Boot 服务、本机 MySQL、Redis、RabbitMQ 连接配置已建立 |
 | 采购申请创建 | 已完成 | 主申请、采购主表、采购明细、扩展表事务写入 |
 | 合同变更创建 | 已完成 | 主申请、合同变更主表、明细、扩展表事务写入 |
 | 统一业务数据读取 | 已完成首版 | 通过内部接口按业务类型拼装快照数据 |
@@ -337,7 +337,7 @@ WHERE id = ? AND status = 'IN_PROGRESS' AND lock_version = ?
 
 ### 9.3 幂等响应
 
-首次动作写入 `approval_action`；相同 `actionRequestId` 再次到达时返回首次动作结果，不重复推进节点、不重复生成快照、不重复发布业务效果。不同动作复用同一个请求键时返回 `409 CONFLICT`。
+首次动作写入 `approval_action`，同时保存完整请求规范化后的 `request_hash`；相同 `actionRequestId` 再次到达时，仅当摘要一致才返回首次动作结果，不重复推进节点、不重复生成快照、不重复发布业务效果。摘要不一致时返回 `409 ACTION_REQUEST_ID_REUSED`。
 
 ### 9.4 错误码建议
 

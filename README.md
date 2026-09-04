@@ -9,7 +9,7 @@
 - 本机 MySQL 8+
 - 本机 Redis 7+
 - 本机 RabbitMQ 4+
-- Docker Desktop（可选，仅用于启动容器化基础设施）
+- 本机已启动的 MySQL、Redis、RabbitMQ 服务
 
 ## 本地配置
 
@@ -27,25 +27,17 @@ $env:LOCAL_DB_PASSWORD = '<本机 MySQL root 密码>'
 
 也可以使用 `LOCAL_DB_USERNAME`、`LOCAL_DB_URL`、`LOCAL_REDIS_*` 和 `LOCAL_RABBITMQ_*` 覆盖本地默认值。
 
-## Docker 基础设施（可选）
+## 本地基础设施
 
-```powershell
-docker compose up -d
-```
+请先在本机启动 MySQL 8、Redis 7、RabbitMQ 4，再运行服务和测试。
 
-容器化部署时显式启用 Docker profile：
+默认连接地址如下：
 
-```powershell
-$env:SPRING_PROFILES_ACTIVE = 'docker'
-```
+- MySQL：`127.0.0.1:3306/fluxcore`
+- Redis：`127.0.0.1:6379`
+- RabbitMQ：`127.0.0.1:5672`
 
-也可以执行：
-
-```powershell
-.\scripts\start-infra.ps1
-```
-
-Docker profile 使用 Compose 服务名 `mysql`、`redis`、`rabbitmq`，账号密码为 Compose 中定义的 `fluxcore`。
+如需覆盖默认地址，可使用 `LOCAL_DB_URL`、`LOCAL_REDIS_*`、`LOCAL_RABBITMQ_*` 和 `LOCAL_BUSINESS_SERVICE_URL`。
 
 ## 当前状态
 

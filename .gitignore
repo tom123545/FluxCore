@@ -3,5 +3,4 @@ target/
 *.iml
 *.log
 .env
-docker-data/
 !.mvn/wrapper/maven-wrapper.jar

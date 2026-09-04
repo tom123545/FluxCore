@@ -8,6 +8,8 @@ spring:
   rabbitmq:
     listener:
       simple:
+        # Expected notification failures are persisted by the service. Keep requeue for
+        # unexpected infrastructure failures such as a database outage.
         default-requeue-rejected: true
         acknowledge-mode: auto
 management:
@@ -24,3 +26,9 @@ fluxcore:
       exchange: ${APPROVAL_EVENT_EXCHANGE:fluxcore.approval.events}
       queue: ${APPROVAL_EVENT_QUEUE:fluxcore.approval.notifications}
       routing-key: ${APPROVAL_EVENT_ROUTING_KEY:approval.event}
+      retry:
+        interval-ms: ${NOTIFICATION_RETRY_INTERVAL_MS:5000}
+        batch-size: ${NOTIFICATION_RETRY_BATCH_SIZE:50}
+        max-attempts: ${NOTIFICATION_RETRY_MAX_ATTEMPTS:5}
+        base-delay-seconds: ${NOTIFICATION_RETRY_BASE_DELAY_SECONDS:30}
+        max-delay-seconds: ${NOTIFICATION_RETRY_MAX_DELAY_SECONDS:3600}
